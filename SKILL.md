@@ -1,7 +1,21 @@
 ---
 name: doc-holmes
 version: 1.2.0
-description: Layout-preserving precise translation for large PDFs (papers, guidelines, reports). Keeps formulas, figures, tables, TOC and annotations intact; outputs a bilingual side-by-side PDF plus a pure-translation PDF. Every file is triaged first: tier A (clean born-digital, high fidelity), tier B (noisy text layer, translated with a noise report), tier C (scanned/image-only, experimental OCR channel marked preview quality). Runs the BabelDOC engine (pdf2zh-next) as a subprocess on any OpenAI-compatible endpoint you configure (bring your own key; none bundled). Batch mode ships resume, per-file timeout, audit log and rollback. Triggers: PDF translation, translate a PDF, PDF to Chinese, translate paper, translate document, full-text translation, bilingual PDF, side-by-side translation, keep original layout, layout preserved, formula preservation, scanned PDF translation, academic PDF translator, medical literature translation, batch PDF translate.
+description: >-
+  Layout-preserving precise translation for large PDFs (papers, guidelines,
+  reports). Keeps formulas, figures, tables, TOC and annotations intact;
+  outputs a bilingual side-by-side PDF plus a pure-translation PDF. Every
+  file is triaged first: tier A (clean born-digital, high fidelity), tier B
+  (noisy text layer, translated with a noise report), tier C (scanned/image-
+  only, experimental OCR channel marked preview quality). Runs the BabelDOC
+  engine (pdf2zh-next) as a subprocess on any OpenAI-compatible endpoint you
+  configure (bring your own key; none bundled). Batch mode ships resume,
+  per-file timeout, audit log and rollback. Triggers: PDF translation,
+  translate a PDF, PDF to Chinese, translate paper, translate document,
+  full-text translation, bilingual PDF, side-by-side translation, keep
+  original layout, layout preserved, formula preservation, scanned PDF
+  translation, academic PDF translator, medical literature translation,
+  batch PDF translate.
 author: DoctorQ Lab
 license: MIT
 compatibility: Requires Python 3.10+ and the pdf2zh-next engine (pip install pdf2zh-next or uv tool install pdf2zh-next). Translation uses your own OpenAI-compatible endpoint and API key (env DOC_HOLMES_OPENAI_BASE_URL + DOC_HOLMES_OPENAI_API_KEY; the free-tier glm-4.5-flash on the official Zhipu open platform works well). No credentials are bundled. The OCR channel for scanned PDFs optionally uses tesseract. Works on Linux, macOS and Windows.
