@@ -132,6 +132,7 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
               per_file_timeout_s: int = None, do_triage: bool = True,
               force_tier: str = None, repair: str = "auto",
               no_glossary: bool = False, openai_timeout: int = None,
+              part_pages: int = None, glossary: str = "auto",
               progress=None) -> BatchResult:
     """批量翻译。审计逐文件落 outdir/audit.jsonl；失败文件产物回滚。"""
     if workers > 4:
@@ -187,7 +188,14 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
                 repair_stats = {"error": str(exc)[:200]}
 
         # 铁律⑤：engine 层 per-file 超时
-        extra = ["--no-auto-extract-glossary"] if no_glossary else None
+        from .cli import _large_doc_policy
+        eff_part, eff_no_glossary, _notices = _large_doc_policy(
+            rep.page_count if rep else None, part_pages, glossary)
+        if no_glossary:
+            eff_no_glossary = True
+        extra = ["--no-auto-extract-glossary"] if eff_no_glossary else None
+        if eff_part:
+            extra = (extra or []) + ["--max-pages-per-part", str(eff_part)]
         eng = translate_pdf(
             real, file_out, base_url, api_key, model,
             page_count=rep.page_count if rep else None,
@@ -203,6 +211,8 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
             "dual_path": eng.dual_path, "mono_path": eng.mono_path,
             "chars_per_page": rep.chars_per_page if rep else None,
             "triage_reasons": rep.reasons if rep else [],
+            "large_doc_policy": {"part_pages": eff_part or 0,
+                                 "glossary_skipped": bool(eff_no_glossary or no_glossary)},
             "repair": repair_stats,
             "error": None if eng.ok else eng.stderr_tail[-600:],
         }

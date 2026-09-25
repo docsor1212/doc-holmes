@@ -48,9 +48,33 @@ def cmd_triage(args) -> int:
     return 0
 
 
+AUTO_SPLIT_PAGES_THRESHOLD = 40   # 页数阈值：超过即自动分段 + 自动跳过术语抽取
+AUTO_SPLIT_PART_SIZE = 25
+
+
+def _large_doc_policy(page_count, part_pages, glossary):
+    """大文档自动策略（v2.0.0）：返回 (effective_part_pages, effective_no_glossary, notices)。
+
+    - part_pages: None=自动（页数≥阈值按 25 页/段）；0=显式关闭分段；N=显式段大小
+    - glossary: "auto" 时大文档自动跳过术语抽取（STTT 案例：巨型提示超时）；"off" 强制关
+    """
+    notices = []
+    eff_part = part_pages
+    eff_no_glossary = (glossary == "off")
+    if page_count and page_count >= AUTO_SPLIT_PAGES_THRESHOLD:
+        if eff_part is None:
+            eff_part = AUTO_SPLIT_PART_SIZE
+            notices.append("[大文档] %d 页 ≥ %d：自动按 %d 页/段分段翻译（--part-pages 0 可关闭）"
+                           % (page_count, AUTO_SPLIT_PAGES_THRESHOLD, AUTO_SPLIT_PART_SIZE))
+        if glossary == "auto":
+            eff_no_glossary = True
+            notices.append("[大文档] 自动跳过术语抽取（防巨型提示超时；--glossary auto 可感知）")
+    return eff_part, eff_no_glossary, notices
+
+
 def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mono,
                    qps, tier_mode, ocr_mode, ocr_lang, timeout_s, repair_mode="auto",
-                   no_glossary=False):
+                   no_glossary=False, part_pages=None, glossary="auto"):
     """单文件完整通路：triage → (C 级 OCR) → 引擎 → (C 级说明页) → audit。"""
     from . import triage as triage_mod
     from .engine_babeldoc import translate_pdf
@@ -58,13 +82,23 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
     os.makedirs(outdir, exist_ok=True)
     rep = triage_mod.triage_pdf(pdf)
     tier = rep.tier if tier_mode in (None, "auto") else tier_mode
+    # 大文档自动策略（v2.0.0）：分段 + 术语抽取跳过（必须在 extra 使用前计算）
+    # 用户显式给 --pages 时跳过自动策略（局部小任务不该被强跳术语/强分段）；
+    # 显式 --part-pages 仍被尊重
+    policy_page_count = None if pages else rep.page_count
+    auto_part = part_pages
+    eff_part, eff_no_glossary, policy_notices = _large_doc_policy(
+        policy_page_count, auto_part, glossary)
+    for notice in policy_notices:
+        print(notice)
+
     extra = []
     if rep.two_column:
         extra += ["--split-short-lines"]
     if tier == "C":
         # OCR 重建层（图像+隐形文本）会被引擎的扫插件检测拦下，此为官方通道开关
         extra += ["--skip-scanned-detection"]
-    if no_glossary:
+    if no_glossary or eff_no_glossary:
         # 大文档术语抽取会构造巨型提示导致超时（STTT 案例），可整体关闭（append 勿覆盖）
         extra.append("--no-auto-extract-glossary")
 
@@ -97,11 +131,24 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
             return 2, rep, None
         print("[C级] 走 OCR 实验通道（预览质量）：%s" % info.get("version", "tesseract"))
         tmp_ocr = os.path.join(outdir, os.path.basename(pdf))
-        ocr_stats = ocr_adapter.ocr_pdf_to_textlayer(pdf, tmp_ocr, lang=ocr_lang)
-        print("[C级] OCR 完成：%(pages)d 页，%(pages_with_text)d 页有文本，共 %(ocr_chars)d 字符"
-              % ocr_stats)
+        if repair_mode == "off":
+            ocr_stats = ocr_adapter.ocr_pdf_to_textlayer(pdf, tmp_ocr, lang=ocr_lang)
+        else:
+            # v2.0.0：自建修复后隐形文本层（行级修复真实作用于译文源）
+            ocr_stats = ocr_adapter.rebuild_repaired_textlayer(pdf, tmp_ocr, lang=ocr_lang)
+            print("[C级] 修复层：%d 行中修复 %d 行（%d 字符）"
+                  % (ocr_stats.get("lines", 0), ocr_stats.get("lines_repaired", 0),
+                     ocr_stats.get("chars", 0)))
+        if "pages_with_text" in ocr_stats:      # 旧 tesseract 直出层
+            print("[C级] OCR 完成：%(pages)d 页，%(pages_with_text)d 页有文本，共 %(ocr_chars)d 字符"
+                  % ocr_stats)
+        else:                                    # v2.0.0 修复重建层
+            print("[C级] OCR 完成：%(pages)d 页，%(lines)d 行（修复 %(lines_repaired)d），共 %(chars)d 字符"
+                  % ocr_stats)
         work_pdf = tmp_ocr
 
+    if eff_part:
+        extra = extra + ["--max-pages-per-part", str(eff_part)]
     eng = translate_pdf(work_pdf, outdir, ep.base_url, ep.api_key, ep.model,
                         page_count=rep.page_count, timeout_s=timeout_s,
                         lang_in=lang_in, lang_out=lang_out, qps=qps,
@@ -119,6 +166,8 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
         "path": os.path.realpath(pdf), "tier": tier,
         "triage": rep.to_dict(), "engine": eng.to_dict(),
         "ocr": ocr_stats, "repair": repair_stats, "ok": eng.ok,
+        "large_doc_policy": {"part_pages": eff_part or 0,
+                             "glossary_skipped": bool(eff_no_glossary or no_glossary)},
     }
     if eng.ok:
         from .ocr_adapter import attach_preview_notice
@@ -159,6 +208,9 @@ def cmd_translate(args) -> int:
         print("%s 是目录——单文件请用 translate，目录批量请用：\n"
               "  doc-holmes batch %s -o <输出目录>" % (args.pdf, args.pdf), file=sys.stderr)
         return 2
+    if args.part_pages is not None and args.part_pages < 0:
+        print("--part-pages 不能为负数", file=sys.stderr)
+        return 2
     if not os.path.isfile(args.pdf):
         print("文件不存在：%s" % args.pdf, file=sys.stderr)
         return 2
@@ -169,7 +221,8 @@ def cmd_translate(args) -> int:
         pages=args.pages, no_dual=args.no_dual, no_mono=args.no_mono,
         qps=args.qps if args.qps is not None else ep.qps, tier_mode=args.tier, ocr_mode=args.ocr,
         ocr_lang=args.ocr_lang, timeout_s=args.timeout_s,
-        repair_mode=args.repair, no_glossary=args.no_glossary)
+        repair_mode=args.repair, no_glossary=args.no_glossary,
+        part_pages=args.part_pages, glossary=args.glossary)
     return code
 
 
@@ -197,7 +250,8 @@ def cmd_batch(args) -> int:
         lang_out=args.lang_out, qps=args.qps if args.qps is not None else ep.qps,
         per_file_timeout_s=args.timeout_s, force_tier=args.tier,
         repair=args.repair, no_glossary=args.no_glossary,
-        openai_timeout=ep.timeout,
+        openai_timeout=ep.timeout, part_pages=args.part_pages,
+        glossary=args.glossary,
         progress=prog if not args.quiet else None)
     if not args.quiet:
         print()
@@ -328,6 +382,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "on=全文档强制含 A 级；off=关闭）")
     p.add_argument("--no-glossary", action="store_true",
                    help="关闭自动术语抽取（大文档该阶段可能超时；术语一致性会略降）")
+    p.add_argument("--part-pages", type=int, default=None,
+                   help="分段翻译每段页数（0=不分段；默认自动：≥40 页按 25 页/段）")
+    p.add_argument("--glossary", choices=["auto", "off"], default="auto",
+                   help="术语抽取策略（auto=大文档自动跳过；off=始终跳过）")
     p.set_defaults(func=cmd_translate)
 
     p = sub.add_parser("batch", help="批量翻译目录下全部 PDF（断点续传 + 审计）")
@@ -345,6 +403,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="B 级图层重复检测（只读；默认 auto，on=全文档强制）")
     p.add_argument("--no-glossary", action="store_true",
                    help="关闭自动术语抽取（大文档防超时）")
+    p.add_argument("--part-pages", type=int, default=None,
+                   help="分段翻译每段页数（默认自动：≥40 页按 25 页/段）")
+    p.add_argument("--glossary", choices=["auto", "off"], default="auto")
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(func=cmd_batch)
 

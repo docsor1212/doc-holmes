@@ -1,6 +1,6 @@
 ---
 name: doc-holmes
-version: 1.3.0
+version: 2.0.0
 description: >-
   Layout-preserving precise translation for large PDFs (papers, guidelines, reports). Keeps
   formulas, figures, tables, TOC and annotations intact; outputs a bilingual side-by-side PDF
@@ -17,7 +17,7 @@ author: DoctorQ Lab
 license: MIT
 compatibility: Requires Python 3.10+ and the pdf2zh-next engine (pip install pdf2zh-next or uv tool install pdf2zh-next). Translation uses your own OpenAI-compatible endpoint and API key (env DOC_HOLMES_OPENAI_BASE_URL + DOC_HOLMES_OPENAI_API_KEY; the free-tier glm-4.5-flash on the official Zhipu open platform works well). No credentials are bundled. The OCR channel for scanned PDFs optionally uses tesseract. Works on Linux, macOS and Windows.
 metadata:
-  version: "1.3.0"
+  version: "2.0.0"
   author: docsor1212
   displayName: Doc Holmes - Layout-Preserving PDF Translation
   homepage: https://skillhub.cn
@@ -66,9 +66,9 @@ SiliconFlow (`https://api.siliconflow.cn/v1`) or any OpenAI-compatible endpoint 
 
 | Tier | Meaning | Translation promise |
 |---|---|---|
-| **A** | Clean born-digital: dense text layer (≥500 chars/page), no duplicate layers, no artifacts | High fidelity — formulas/figures/TOC preserved, safe to use |
+| **A** | Clean born-digital: dense text layer (≥500 chars/page), no duplicate layers, no artifacts | High fidelity — formulas/figures/TOC preserved, safe to use. **Oversized PDFs (≥40 pages) are auto-partitioned (25 pages/part) and skip glossary extraction automatically** |
 | **B** | Has a text layer but noisy: duplicated layers / watermarks / artifact tokens | Translatable; **span-level duplicate-layer detection** (exact counts in audit) + noise report. Redaction surgery is deliberately NOT applied (overlapping glyphs make it destructive) |
-| **C** | Scanned / no usable text layer / encrypted | **Experimental (preview quality)**: OCR rebuilds a text layer first; output carries a "preview quality" notice page — not for submission or clinical use |
+| **C** | Scanned / no usable text layer / encrypted | **Experimental (preview quality)**: OCR rebuilds a **line-repaired invisible text layer** (control chars stripped, CJK pseudo-spaces removed) before translation; output carries a "preview quality" notice page — not for submission or clinical use |
 
 `triage` can run standalone (no translation), supports directories and `--json`; grading rules: `references/triage.md`.
 
@@ -78,7 +78,8 @@ SiliconFlow (`https://api.siliconflow.cn/v1`) or any OpenAI-compatible endpoint 
 doc_holmes_cli.py triage <pdf|dir> [--json] [--sample-pages 3]   # grade only
 doc_holmes_cli.py translate paper.pdf [-o dir] \
   [--pages 1-5] [--lang-in en] [--lang-out zh] \
-  [--tier auto|A|B|C] [--ocr auto|off] [--ocr-lang eng] [--repair auto|on|off] [--no-glossary] \
+  [--tier auto|A|B|C] [--ocr auto|off] [--ocr-lang eng] [--repair auto|on|off] \
+  [--part-pages N] [--glossary auto|off] [--no-glossary] \
   [--no-dual|--no-mono] [--qps 4] [--timeout-s 600]
 doc_holmes_cli.py batch <dir> -o <outdir> \
   [--workers 1-4] [--no-resume] [--blacklist f1 f2] [--tier auto] [--repair auto|on|off] [--no-glossary]
@@ -121,7 +122,7 @@ Note: CLI help texts are in Chinese (the author's primary audience); the flags a
 - Engine installed but selfcheck can't find it → set `DOC_HOLMES_PDF2ZH_BIN` to the full `pdf2zh_next` path.
 - Feeding a directory to `translate` → refused with a hint; directories are `batch`'s job. Non-PDF inputs (DOCX/PPTX/images) are not supported.
 - Trusting tier-C output for anything formal → the notice page and `tier=C` audit field exist so this cannot happen silently.
-- Translation timing out on very large / text-dense PDFs ("Automatic Term Extraction" or a huge paragraph stalling) → pass `--no-glossary` (skips the term-extraction stage) and raise `DOC_HOLMES_OPENAI_TIMEOUT` (default 180s); split with `--pages` if still heavy.
+- Translation timing out on very large / text-dense PDFs → since v2.0.0 this is automatic: documents ≥40 pages are partitioned (25 pages/part, `--part-pages` to tune) and glossary extraction is skipped (`--glossary off` to force-skip, `--part-pages 0` to disable partitioning). Manual fallbacks: `--no-glossary`, `DOC_HOLMES_OPENAI_TIMEOUT` (default 180s), `--pages`.
 
 ## Batch engineering guarantees
 
