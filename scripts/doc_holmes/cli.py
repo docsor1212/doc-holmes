@@ -74,7 +74,8 @@ def _large_doc_policy(page_count, part_pages, glossary):
 
 def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mono,
                    qps, tier_mode, ocr_mode, ocr_lang, timeout_s, repair_mode="auto",
-                   no_glossary=False, part_pages=None, glossary="auto"):
+                   no_glossary=False, part_pages=None, glossary="auto",
+                   medical_glossary=True, glossaries_file=None):
     """单文件完整通路：triage → (C 级 OCR) → 引擎 → (C 级说明页) → audit。"""
     from . import triage as triage_mod
     from .engine_babeldoc import translate_pdf
@@ -149,6 +150,21 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
 
     if eff_part:
         extra = extra + ["--max-pages-per-part", str(eff_part)]
+    # 术语表注入：引擎 --glossaries 为单值（逗号分隔多路径，last-wins）
+    gp = []
+    from .glossary import glossary_csv_ok, glossary_path
+    if medical_glossary and lang_in == "en" and lang_out == "zh":
+        if glossary_csv_ok():
+            gp.append(glossary_path())
+        else:
+            print("[术语表] 内置医学术语表缺失或格式异常，已跳过注入（不影响翻译，仅术语一致性略降）")
+    for gf in (glossaries_file or []):
+        if os.path.isfile(gf) and glossary_csv_ok(os.path.abspath(gf)):
+            gp.append(os.path.abspath(gf))
+        else:
+            print("[术语表] 用户术语表不存在或格式异常，已跳过：%s" % gf, file=sys.stderr)
+    if gp:
+        extra = extra + ["--glossaries", ",".join(gp)]   # 引擎按逗号 split，不能带空格
     eng = translate_pdf(work_pdf, outdir, ep.base_url, ep.api_key, ep.model,
                         page_count=rep.page_count, timeout_s=timeout_s,
                         lang_in=lang_in, lang_out=lang_out, qps=qps,
@@ -211,18 +227,31 @@ def cmd_translate(args) -> int:
     if args.part_pages is not None and args.part_pages < 0:
         print("--part-pages 不能为负数", file=sys.stderr)
         return 2
-    if not os.path.isfile(args.pdf):
+    # v2.2.0：DOCX/PPTX 输入（libreoffice 转 PDF 后走现有管线）
+    work_input = args.pdf
+    if os.path.splitext(args.pdf)[1].lower() in (".docx", ".pptx", ".ppt"):
+        from .office_input import convert_to_pdf
+        try:
+            work_input = convert_to_pdf(
+                args.pdf, args.output or os.path.join(
+                    os.path.dirname(os.path.realpath(args.pdf)) or ".", "_translated"))
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if not os.path.isfile(work_input):
         print("文件不存在：%s" % args.pdf, file=sys.stderr)
         return 2
     outdir = args.output or os.path.join(
-        os.path.dirname(os.path.realpath(args.pdf)) or ".", "_translated")
+        os.path.dirname(os.path.realpath(work_input)) or ".", "_translated")
     code, _, _ = _translate_one(
-        args.pdf, outdir, ep, lang_in=args.lang_in, lang_out=args.lang_out,
+        work_input, outdir, ep, lang_in=args.lang_in, lang_out=args.lang_out,
         pages=args.pages, no_dual=args.no_dual, no_mono=args.no_mono,
         qps=args.qps if args.qps is not None else ep.qps, tier_mode=args.tier, ocr_mode=args.ocr,
         ocr_lang=args.ocr_lang, timeout_s=args.timeout_s,
         repair_mode=args.repair, no_glossary=args.no_glossary,
-        part_pages=args.part_pages, glossary=args.glossary)
+        part_pages=args.part_pages, glossary=args.glossary,
+        medical_glossary=not args.no_medical_glossary,
+        glossaries_file=args.glossaries_file)
     return code
 
 
@@ -251,13 +280,19 @@ def cmd_batch(args) -> int:
         per_file_timeout_s=args.timeout_s, force_tier=args.tier,
         repair=args.repair, no_glossary=args.no_glossary,
         openai_timeout=ep.timeout, part_pages=args.part_pages,
-        glossary=args.glossary,
+        glossary=args.glossary, medical_glossary=not args.no_medical_glossary,
+        glossaries_file=args.glossaries_file,
         progress=prog if not args.quiet else None)
     if not args.quiet:
         print()
     report_path = os.path.join(args.output, "report.md")
     write_report(result, report_path)
-    print("报告: %s" % report_path)
+    try:
+        from .report_html import write_html
+        html_path = write_html(result, args.output)
+        print("报告: %s（可视化: %s）" % (report_path, html_path))
+    except Exception as exc:   # html 失败不影响 md 报告与批次结果
+        print("报告: %s（HTML 生成失败: %s）" % (report_path, str(exc)[:80]))
     print(result.summary())
     return 0 if (result.failed == 0 and result.timeout == 0) else 4
 
@@ -386,6 +421,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="分段翻译每段页数（0=不分段；默认自动：≥40 页按 25 页/段）")
     p.add_argument("--glossary", choices=["auto", "off"], default="auto",
                    help="术语抽取策略（auto=大文档自动跳过；off=始终跳过）")
+    p.add_argument("--no-medical-glossary", action="store_true",
+                   help="关闭内置医学术语表注入（en→zh 时默认注入核心术语，提升一致性）")
+    p.add_argument("--glossaries-file", action="append", default=None, metavar="CSV",
+                   help="用户自定义术语表 csv（source,target,tgt_lng；可重复叠加）")
     p.set_defaults(func=cmd_translate)
 
     p = sub.add_parser("batch", help="批量翻译目录下全部 PDF（断点续传 + 审计）")
@@ -406,6 +445,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--part-pages", type=int, default=None,
                    help="分段翻译每段页数（默认自动：≥40 页按 25 页/段）")
     p.add_argument("--glossary", choices=["auto", "off"], default="auto")
+    p.add_argument("--no-medical-glossary", action="store_true")
+    p.add_argument("--glossaries-file", action="append", default=None, metavar="CSV")
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(func=cmd_batch)
 

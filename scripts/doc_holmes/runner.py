@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -133,6 +134,7 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
               force_tier: str = None, repair: str = "auto",
               no_glossary: bool = False, openai_timeout: int = None,
               part_pages: int = None, glossary: str = "auto",
+              medical_glossary: bool = True, glossaries_file=None,
               progress=None) -> BatchResult:
     """批量翻译。审计逐文件落 outdir/audit.jsonl；失败文件产物回滚。"""
     if workers > 4:
@@ -196,6 +198,19 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
         extra = ["--no-auto-extract-glossary"] if eff_no_glossary else None
         if eff_part:
             extra = (extra or []) + ["--max-pages-per-part", str(eff_part)]
+        # 术语表注入：引擎 --glossaries 为单值（逗号分隔多路径，last-wins）
+        gp = []
+        from .glossary import glossary_csv_ok, glossary_path
+        if medical_glossary and lang_in == "en" and lang_out == "zh":
+            if glossary_csv_ok():
+                gp.append(glossary_path())
+        for gf in (glossaries_file or []):
+            if os.path.isfile(gf) and glossary_csv_ok(os.path.abspath(gf)):
+                gp.append(os.path.abspath(gf))
+            else:
+                print("[术语表] 用户术语表不存在或格式异常，已跳过：%s" % gf, file=sys.stderr)
+        if gp:
+            extra = (extra or []) + ["--glossaries", ",".join(gp)]
         eng = translate_pdf(
             real, file_out, base_url, api_key, model,
             page_count=rep.page_count if rep else None,

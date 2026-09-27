@@ -167,10 +167,19 @@ def attach_preview_notice(pdf_path: str, out_path: str = None) -> str:
 
 # ==================== v2.0.0：TSV 行框重建修复文本层 ====================
 
-def _repair_line(line: str) -> str:
-    """行级修复：控制字符剥除 + 中文字间伪空格。粘连拆分在行级不适用（会改变框内词距）。"""
+def _repair_line(line: str, deep: bool = False) -> str:
+    """行级修复。
+
+    基础（始终）：控制字符剥除。
+    deep=True（C 级修复层 2.0）：另做中文伪空格删除；drop 级噪声行由调用方
+    整行丢弃（v2.2.0：水印/ICP 行不再进译文）。
+    """
     from . import skip_rules
-    return skip_rules.strip_control_chars(line)
+    line = skip_rules.strip_control_chars(line)
+    if deep:
+        from .repair_v5 import fix_cjk_spaces
+        line = fix_cjk_spaces(line)[0]
+    return line
 
 
 def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
@@ -193,11 +202,16 @@ def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
             "tesseract 缺少语言包 %s（已有：%s）。安装示例：apt install tesseract-ocr-<lang>"
             % (missing, ",".join(info.get("langs", [])) or "无"))
 
-    from .repair_v5 import fix_cjk_spaces
+    from .repair_v5 import fix_cjk_spaces, fix_glued_words
     from . import skip_rules
+    try:
+        import wordninja  # noqa: F401
+        HAS_WORDNINJA = True
+    except Exception:
+        HAS_WORDNINJA = False
 
     stats = {"pages": 0, "lines": 0, "lines_repaired": 0, "chars": 0,
-             "pages_ocr_failed": 0}
+             "pages_ocr_failed": 0, "noise_lines_dropped": 0, "lines_glue_split": 0}
     os.makedirs(os.path.dirname(os.path.realpath(out_pdf)) or ".", exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="doc_holmes_ocr_") as tmp:
         out_doc = pymupdf.open()
@@ -254,8 +268,19 @@ def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
             for (_bk, _par, _ln), ws in lines.items():
                 ws.sort(key=lambda x: x[0])
                 raw = " ".join(t for *_, t in ws)
-                fixed = _repair_line(raw)
-                fixed = fix_cjk_spaces(fixed)[0]
+                fixed = _repair_line(raw, deep=True)
+                # v2.2.0：drop 级噪声行（水印/ICP 等）整行移出译文源
+                hits = skip_rules.classify_line(fixed)
+                if any(h.action == skip_rules.ACTION_DROP for h in hits
+                       if h.rule != "artifact_token"):
+                    stats["noise_lines_dropped"] = stats.get("noise_lines_dropped", 0) + 1
+                    continue
+                # 行级粘连拆分：仅当词表可用（无词表时保守不拆）
+                if HAS_WORDNINJA and sum(c.isupper() for c in fixed) >= 8:
+                    split = fix_glued_words(fixed)[0]
+                    if split != fixed:
+                        fixed = split
+                        stats["lines_glue_split"] = stats.get("lines_glue_split", 0) + 1
                 if not fixed.strip():
                     continue
                 x0 = min(w[0] for w in ws) * zoom_inv

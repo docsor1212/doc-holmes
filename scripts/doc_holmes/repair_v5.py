@@ -111,6 +111,9 @@ def fix_glued_words(text: str) -> tuple:
         tokens = line.split(" ")
         new_tokens = []
         for tok in tokens:
+            if not tok.isascii():
+                new_tokens.append(tok)   # wordninja 丢非 ASCII（评审实测），含中文 token 一律保留
+                continue
             core = tok.strip(",")
             if _split_candidate(core) and not _is_protected(core):
                 fixed = split_glued_token(core)

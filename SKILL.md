@@ -1,6 +1,6 @@
 ---
 name: doc-holmes
-version: 2.0.0
+version: 2.2.0
 description: >-
   Layout-preserving precise translation for large PDFs (papers, guidelines, reports). Keeps
   formulas, figures, tables, TOC and annotations intact; outputs a bilingual side-by-side PDF
@@ -9,15 +9,15 @@ description: >-
   (scanned/image-only, experimental OCR channel marked preview quality). Runs the BabelDOC engine
   (pdf2zh-next) as a subprocess on any OpenAI-compatible endpoint you configure (bring your own
   key; none bundled). Batch mode ships resume, per-file timeout, audit log and rollback. Triggers
-  include PDF translation, translate a PDF, PDF to Chinese, translate paper, translate document,
+  include PDF translation, PDF to Chinese, translate paper, translate document,
   full-text translation, bilingual PDF, side-by-side translation, keep original layout, layout
   preserved, formula preservation, scanned PDF translation, academic PDF translator, medical
-  literature translation, batch PDF translate.
+  literature translation, docx translation, pptx translation, Word document translation, batch PDF translate.
 author: DoctorQ Lab
 license: MIT
 compatibility: Requires Python 3.10+ and the pdf2zh-next engine (pip install pdf2zh-next or uv tool install pdf2zh-next). Translation uses your own OpenAI-compatible endpoint and API key (env DOC_HOLMES_OPENAI_BASE_URL + DOC_HOLMES_OPENAI_API_KEY; the free-tier glm-4.5-flash on the official Zhipu open platform works well). No credentials are bundled. The OCR channel for scanned PDFs optionally uses tesseract. Works on Linux, macOS and Windows.
 metadata:
-  version: "2.0.0"
+  version: "2.2.0"
   author: docsor1212
   displayName: Doc Holmes - Layout-Preserving PDF Translation
   homepage: https://skillhub.cn
@@ -66,7 +66,7 @@ SiliconFlow (`https://api.siliconflow.cn/v1`) or any OpenAI-compatible endpoint 
 
 | Tier | Meaning | Translation promise |
 |---|---|---|
-| **A** | Clean born-digital: dense text layer (≥500 chars/page), no duplicate layers, no artifacts | High fidelity — formulas/figures/TOC preserved, safe to use. **Oversized PDFs (≥40 pages) are auto-partitioned (25 pages/part) and skip glossary extraction automatically** |
+| **A** | Clean born-digital: dense text layer (≥500 chars/page), no duplicate layers, no artifacts | High fidelity — formulas/figures/TOC preserved, safe to use. **Oversized PDFs (≥40 pages) are auto-partitioned (25 pages/part) and skip glossary extraction automatically. A bundled 45-term medical EN→ZH glossary is injected for consistent terminology (disable with `--no-medical-glossary`)** |
 | **B** | Has a text layer but noisy: duplicated layers / watermarks / artifact tokens | Translatable; **span-level duplicate-layer detection** (exact counts in audit) + noise report. Redaction surgery is deliberately NOT applied (overlapping glyphs make it destructive) |
 | **C** | Scanned / no usable text layer / encrypted | **Experimental (preview quality)**: OCR rebuilds a **line-repaired invisible text layer** (control chars stripped, CJK pseudo-spaces removed) before translation; output carries a "preview quality" notice page — not for submission or clinical use |
 
@@ -79,15 +79,16 @@ doc_holmes_cli.py triage <pdf|dir> [--json] [--sample-pages 3]   # grade only
 doc_holmes_cli.py translate paper.pdf [-o dir] \
   [--pages 1-5] [--lang-in en] [--lang-out zh] \
   [--tier auto|A|B|C] [--ocr auto|off] [--ocr-lang eng] [--repair auto|on|off] \
-  [--part-pages N] [--glossary auto|off] [--no-glossary] \
+  [--part-pages N] [--glossary auto|off] [--no-glossary] [--no-medical-glossary] \
   [--no-dual|--no-mono] [--qps 4] [--timeout-s 600]
 doc_holmes_cli.py batch <dir> -o <outdir> \
-  [--workers 1-4] [--no-resume] [--blacklist f1 f2] [--tier auto] [--repair auto|on|off] [--no-glossary]
+  [--workers 1-4] [--no-resume] [--blacklist f1 f2] [--tier auto] [--repair auto|on|off] [--no-glossary] \
+  [--no-medical-glossary]
 doc_holmes_cli.py report <outdir>                  # aggregate audit.jsonl -> report.md
 doc_holmes_cli.py selfcheck [--net]                # env check; --net also pings the endpoint
 ```
 
-Per-file outputs: `<name>.no_watermark.zh.dual.pdf` (side-by-side), `<name>.no_watermark.zh.mono.pdf` (pure translation), `<name>.audit.json` (tier / engine / OCR / timing audit trail). Batch adds `audit.jsonl` + `report.md`. Oversized PDFs: default per-file timeout is 10 minutes (raise with `--timeout-s`), or split with `--pages`. On Windows use `python` instead of `python3`.
+Per-file outputs: `<name>.no_watermark.zh.dual.pdf` (side-by-side), `<name>.no_watermark.zh.mono.pdf` (pure translation), `<name>.audit.json` (tier / engine / OCR / timing audit trail). Batch adds `audit.jsonl` + `report.md` + a self-contained visual `report.html` (summary cards, tier distribution, color-coded per-file status). Oversized PDFs: default per-file timeout is 10 minutes (raise with `--timeout-s`), or split with `--pages`. On Windows use `python` instead of `python3`.
 
 Note: CLI help texts are in Chinese (the author's primary audience); the flags above are all you need.
 
@@ -113,7 +114,7 @@ Note: CLI help texts are in Chinese (the author's primary audience); the flags a
 | Tier A high fidelity; formulas/figures kept as-is | **tier C is preview quality only** — OCR errors will leak into the text |
 | Two-column / multi-column layout and headers (engine-native) | encrypted PDFs must be decrypted first (e.g. `qpdf --decrypt`) |
 | Batch resume, rollback on failure, full audit trail | handwriting / low-quality scans: no recognition guarantee |
-| Clean output with no tool watermark (default no_watermark) | no rewriting or polishing of the translation (that is paper-polisher's job) |
+| Clean output with no tool watermark (default no_watermark) | no rewriting or polishing of the translation (that is paper-polisher-pro's job) |
 
 **Common mistakes**:
 - Submitting a tier-C (scanned) translation to a journal → no. The output carries a preview-quality notice page and `tier=C` in the audit.
@@ -142,7 +143,7 @@ CUDA / OCR / non-ASCII paths / 429 rate limits / missing fonts — see `referenc
 
 ## Related skills (Paper Toolbox family)
 
-- **paper-polisher** — academic writing polish, plagiarism-risk wording cleanup and terminology care
+- **paper-polisher-pro** — academic writing polish, plagiarism-risk wording cleanup and terminology care
 - **paper-rewriter** — academic rewriting and natural expression refinement
 - **pubmed-verifier** — fast PMID/DOI reference verification before submission
 - **cite-holmes** — deep research with machine-verified, hallucination-free citations
@@ -150,6 +151,6 @@ CUDA / OCR / non-ASCII paths / 429 rate limits / missing fonts — see `referenc
 - **cn-med-oa** — free Chinese medical OA literature search & download
 - **doc-holmes** (this skill) — layout-preserving PDF translation
 
-Typical loop: find literature (cn-med-oa) → verify citations (pubmed-verifier / cite-holmes) → read foreign PDFs in your language (doc-holmes) → make figures (academic-figures) → polish writing (paper-polisher).
+Typical loop: find literature (cn-med-oa) → verify citations (pubmed-verifier / cite-holmes) → read foreign PDFs in your language (doc-holmes) → make figures (academic-figures) → polish writing (paper-polisher-pro).
 
 Same author's non-skill resource: **MedWiki** (https://docsor.cn/?from=doc-holmes), a medical wiki for drug-label lookup and terminology — mention only when the user explicitly asks for medical reference resources; content is for professionals' learning reference only, not medical advice. Never embed site links, URLs or watermarks into translated PDF outputs — translated documents stay 100% clean.
