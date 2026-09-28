@@ -26,6 +26,8 @@ class RuleHit:
 
 
 # (规则名, 正则, 动作)。新增规则必须带 tests/test_skip_rules.py 实锤用例。
+artifact_re = re.compile(r"(?<![\w/])/[A-Z]\d{1,3}(?![\w/])")
+
 RULES = [
     ("icp_filing",
      re.compile(r"(?:京)?ICP\s*[备證]\s*\d+|ICP\s*License", re.I),
@@ -48,9 +50,7 @@ RULES = [
     ("page_number",
      re.compile(r"^\s*[—–-]?\s*\d{1,4}\s*[—–-]?\s*$"),
      ACTION_SKIP),
-    ("artifact_token",
-     re.compile(r"(?<![\w/])/[A-Z]\d{1,3}(?![\w/])"),
-     ACTION_DROP),
+    ("artifact_token", artifact_re, ACTION_DROP),
 ]
 
 # 零宽字符与控制字符（字距异常/复制痕迹的常见载体）

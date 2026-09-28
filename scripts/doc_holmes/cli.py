@@ -75,7 +75,8 @@ def _large_doc_policy(page_count, part_pages, glossary):
 def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mono,
                    qps, tier_mode, ocr_mode, ocr_lang, timeout_s, repair_mode="auto",
                    no_glossary=False, part_pages=None, glossary="auto",
-                   medical_glossary=True, glossaries_file=None):
+                   medical_glossary=True, glossaries_file=None,
+                   ocr_proofread=True):
     """单文件完整通路：triage → (C 级 OCR) → 引擎 → (C 级说明页) → audit。"""
     from . import triage as triage_mod
     from .engine_babeldoc import translate_pdf
@@ -132,19 +133,31 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
             return 2, rep, None
         print("[C级] 走 OCR 实验通道（预览质量）：%s" % info.get("version", "tesseract"))
         tmp_ocr = os.path.join(outdir, os.path.basename(pdf))
+        line_proofread = None
+        if repair_mode != "off" and ocr_proofread:
+            # v2.3.0：页级 LLM 错字校对（走用户自配端点，仅纠错不改写）
+            from .proofread import make_page_proofread
+            line_proofread = make_page_proofread(
+                ep.base_url, ep.api_key, ep.model, timeout=ep.timeout or 120)
+            print("[C级] LLM 错字校对已启用（--no-ocr-proofread 可关）")
         if repair_mode == "off":
             ocr_stats = ocr_adapter.ocr_pdf_to_textlayer(pdf, tmp_ocr, lang=ocr_lang)
         else:
             # v2.0.0：自建修复后隐形文本层（行级修复真实作用于译文源）
-            ocr_stats = ocr_adapter.rebuild_repaired_textlayer(pdf, tmp_ocr, lang=ocr_lang)
-            print("[C级] 修复层：%d 行中修复 %d 行（%d 字符）"
-                  % (ocr_stats.get("lines", 0), ocr_stats.get("lines_repaired", 0),
-                     ocr_stats.get("chars", 0)))
+            ocr_stats = ocr_adapter.rebuild_repaired_textlayer(
+                pdf, tmp_ocr, lang=ocr_lang, line_proofread=line_proofread)
+            if ocr_stats.get("proofread_error"):
+                print("[C级] 错字校对失败（已降级原文）：%s"
+                      % ocr_stats["proofread_error"][:100])
+            else:
+                print("[C级] 错字校对：%d 行修正 / %d 行修复 / %d 字符"
+                      % (ocr_stats.get("proofread_lines_changed", 0),
+                         ocr_stats.get("lines_repaired", 0), ocr_stats.get("chars", 0)))
         if "pages_with_text" in ocr_stats:      # 旧 tesseract 直出层
             print("[C级] OCR 完成：%(pages)d 页，%(pages_with_text)d 页有文本，共 %(ocr_chars)d 字符"
                   % ocr_stats)
         else:                                    # v2.0.0 修复重建层
-            print("[C级] OCR 完成：%(pages)d 页，%(lines)d 行（修复 %(lines_repaired)d），共 %(chars)d 字符"
+            print("[C级] OCR 完成：%(pages)d 页，%(lines)d 行，共 %(chars)d 字符"
                   % ocr_stats)
         work_pdf = tmp_ocr
 
@@ -251,7 +264,8 @@ def cmd_translate(args) -> int:
         repair_mode=args.repair, no_glossary=args.no_glossary,
         part_pages=args.part_pages, glossary=args.glossary,
         medical_glossary=not args.no_medical_glossary,
-        glossaries_file=args.glossaries_file)
+        glossaries_file=args.glossaries_file,
+        ocr_proofread=not args.no_ocr_proofread)
     return code
 
 
@@ -425,6 +439,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="关闭内置医学术语表注入（en→zh 时默认注入核心术语，提升一致性）")
     p.add_argument("--glossaries-file", action="append", default=None, metavar="CSV",
                    help="用户自定义术语表 csv（source,target,tgt_lng；可重复叠加）")
+    p.add_argument("--no-ocr-proofread", action="store_true",
+                   help="关闭 C 级 OCR 文本的 LLM 错字校对（默认开，走你配置的端点）")
     p.set_defaults(func=cmd_translate)
 
     p = sub.add_parser("batch", help="批量翻译目录下全部 PDF（断点续传 + 审计）")

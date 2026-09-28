@@ -1,6 +1,6 @@
 ---
 name: doc-holmes
-version: 2.2.0
+version: 2.3.0
 description: >-
   Layout-preserving precise translation for large PDFs (papers, guidelines, reports). Keeps
   formulas, figures, tables, TOC and annotations intact; outputs a bilingual side-by-side PDF
@@ -17,7 +17,7 @@ author: DoctorQ Lab
 license: MIT
 compatibility: Requires Python 3.10+ and the pdf2zh-next engine (pip install pdf2zh-next or uv tool install pdf2zh-next). Translation uses your own OpenAI-compatible endpoint and API key (env DOC_HOLMES_OPENAI_BASE_URL + DOC_HOLMES_OPENAI_API_KEY; the free-tier glm-4.5-flash on the official Zhipu open platform works well). No credentials are bundled. The OCR channel for scanned PDFs optionally uses tesseract. Works on Linux, macOS and Windows.
 metadata:
-  version: "2.2.0"
+  version: "2.3.0"
   author: docsor1212
   displayName: Doc Holmes - Layout-Preserving PDF Translation
   homepage: https://skillhub.cn
@@ -68,7 +68,7 @@ SiliconFlow (`https://api.siliconflow.cn/v1`) or any OpenAI-compatible endpoint 
 |---|---|---|
 | **A** | Clean born-digital: dense text layer (≥500 chars/page), no duplicate layers, no artifacts | High fidelity — formulas/figures/TOC preserved, safe to use. **Oversized PDFs (≥40 pages) are auto-partitioned (25 pages/part) and skip glossary extraction automatically. A bundled 45-term medical EN→ZH glossary is injected for consistent terminology (disable with `--no-medical-glossary`)** |
 | **B** | Has a text layer but noisy: duplicated layers / watermarks / artifact tokens | Translatable; **span-level duplicate-layer detection** (exact counts in audit) + noise report. Redaction surgery is deliberately NOT applied (overlapping glyphs make it destructive) |
-| **C** | Scanned / no usable text layer / encrypted | **Experimental (preview quality)**: OCR rebuilds a **line-repaired invisible text layer** (control chars stripped, CJK pseudo-spaces removed) before translation; output carries a "preview quality" notice page — not for submission or clinical use |
+| **C** | Scanned / no usable text layer / encrypted | **Experimental (preview quality)**: OCR rebuilds a **line-repaired invisible text layer**, then an LLM proofreading pass (your configured endpoint) fixes recognition errors before translation; output carries a "preview quality" notice page — not for submission or clinical use |
 
 `triage` can run standalone (no translation), supports directories and `--json`; grading rules: `references/triage.md`.
 
@@ -80,6 +80,7 @@ doc_holmes_cli.py translate paper.pdf [-o dir] \
   [--pages 1-5] [--lang-in en] [--lang-out zh] \
   [--tier auto|A|B|C] [--ocr auto|off] [--ocr-lang eng] [--repair auto|on|off] \
   [--part-pages N] [--glossary auto|off] [--no-glossary] [--no-medical-glossary] \
+  [--no-ocr-proofread] [--glossaries-file CSV] \
   [--no-dual|--no-mono] [--qps 4] [--timeout-s 600]
 doc_holmes_cli.py batch <dir> -o <outdir> \
   [--workers 1-4] [--no-resume] [--blacklist f1 f2] [--tier auto] [--repair auto|on|off] [--no-glossary] \
@@ -135,7 +136,7 @@ CUDA / OCR / non-ASCII paths / 429 rate limits / missing fonts — see `referenc
 
 ## Security & behavior declaration
 
-- **Local-first (this tool)**: triage, duplicate detection, repair statistics, batch orchestration and reports all run locally. doc-holmes itself makes no network calls except translation text sent to the translation endpoint **you** configured (plus an explicit opt-in `selfcheck --net` ping). No telemetry, no auto-updates, no runtime downloads by this tool. (Note: the third-party engine may fetch its own layout assets on first run - a documented engine behavior.)
+- **Local-first (this tool)**: triage, duplicate detection, repair statistics, batch orchestration and reports all run locally. doc-holmes makes network calls only to the endpoint **you** configured: translation text, and (for tier-C scans) OCR text sent for error-proofreading. Plus an explicit opt-in `selfcheck --net` ping. No telemetry, no auto-updates, no runtime downloads by this tool. (Note: the third-party engine may fetch its own layout assets on first run - a documented engine behavior.)
 - **Data boundary**: PDF text is transmitted only to your configured OpenAI-compatible endpoint; API keys stay in your environment variables or your local config file, are passed only as a launch argument to the local engine process, and are never logged or sent anywhere else.
 - **Subprocess isolation**: the translation engine (pdf2zh-next/BabelDOC) and tesseract are invoked as subprocesses with argument lists (no shell), under per-file timeouts; the package vendors no third-party code.
 - **Writes**: only to the output directory you specify (translated PDFs, audit JSON/JSONL, reports); transient OCR work files are created in the OS temp directory and auto-deleted. Tier-C (scanned) outputs carry a preview-quality notice page and are marked not for formal use.

@@ -185,6 +185,7 @@ def _repair_line(line: str, deep: bool = False) -> str:
 def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
                                dpi: int = DEFAULT_DPI, psm: str = DEFAULT_PSM,
                                page_timeout: int = PAGE_TIMEOUT_S,
+                               line_proofread=None,
                                progress=None) -> dict:
     """C 级通路 v2：自建"图像 + 修复后隐形文本层"PDF。
 
@@ -262,6 +263,37 @@ def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
             lines = {}
             for bk, par, ln, left, top, w, h, text in words:
                 lines.setdefault((bk, par, ln), []).append((left, top, w, h, text))
+            # v2.3.0：页级 LLM 错字校对（行数守恒，失败降级原文）
+            # 修正文本按行框组合回填：组内词框合并为单帧、文本替换为修正行
+            if line_proofread:
+                keys_sorted = sorted(lines.keys())
+                page_lines = [" ".join(t for *_, t in sorted(lines[k], key=lambda x: x[0]))
+                              for k in keys_sorted]
+                if not page_lines:
+                    continue
+                try:
+                    fixed_list = line_proofread(page_lines)
+                except Exception as exc:
+                    fixed_list = None
+                    stats["proofread_error"] = str(exc)[:200]
+                if fixed_list and len(fixed_list) == len(page_lines):
+                    changed = 0
+                    for k, old_t, new_t in zip(keys_sorted, page_lines, fixed_list):
+                        if old_t.strip() == new_t.strip():
+                            continue
+                        if not new_t.strip():
+                            continue          # LLM 返回空行：保原文（防内容清空）
+                        ws = lines[k]
+                        x0 = min(w[0] for w in ws)
+                        top = min(w[1] for w in ws)
+                        x1 = max(w[0] + w[2] for w in ws)
+                        hgt = max(w[3] for w in ws)
+                        lines[k] = [(x0, top, x1 - x0, hgt, new_t)]
+                        changed += 1
+                    stats["proofread_lines_changed"] = (
+                        stats.get("proofread_lines_changed", 0) + changed)
+                else:
+                    stats["proofread_skipped"] = stats.get("proofread_skipped", 0) + 1
             zoom_inv = 72.0 / dpi
             out_page = out_doc.new_page(width=page.rect.width, height=page.rect.height)
             out_page.insert_image(out_page.rect, pixmap=pix)
@@ -275,6 +307,10 @@ def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
                        if h.rule != "artifact_token"):
                     stats["noise_lines_dropped"] = stats.get("noise_lines_dropped", 0) + 1
                     continue
+                # artifact token 剥除（对齐 clean_text 语义：保行剥 token）
+                for h in hits:
+                    if h.rule == "artifact_token":
+                        fixed = skip_rules.artifact_re.sub("", fixed)
                 # 行级粘连拆分：仅当词表可用（无词表时保守不拆）
                 if HAS_WORDNINJA and sum(c.isupper() for c in fixed) >= 8:
                     split = fix_glued_words(fixed)[0]
