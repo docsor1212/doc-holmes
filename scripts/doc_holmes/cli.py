@@ -398,6 +398,55 @@ def cmd_selfcheck(args) -> int:
     return 0 if all_ok else 2
 
 
+def cmd_merge(args) -> int:
+    from .pdf_tools import merge_pdfs
+    try:
+        out = merge_pdfs(args.inputs, args.output)
+        print("✔ 合并完成：%s" % out)
+        return 0
+    except Exception as exc:
+        print("%s" % exc, file=sys.stderr)
+        return 2
+
+
+def cmd_split(args) -> int:
+    from .pdf_tools import split_pdf
+    if not os.path.isfile(args.pdf):
+        print("文件不存在：%s" % args.pdf, file=sys.stderr)
+        return 2
+    outdir = args.output or os.path.join(
+        os.path.dirname(os.path.realpath(args.pdf)) or ".", "split_out")
+    try:
+        outs = split_pdf(args.pdf, outdir, args.pages_spec)
+    except Exception as exc:
+        print("%s" % exc, file=sys.stderr)
+        return 2
+    print("✔ 拆分完成：%d 段 → %s" % (len(outs), outdir))
+    for p in outs:
+        print("  %s" % p)
+    return 0
+
+
+def cmd_estimate(args) -> int:
+    from .pdf_tools import estimate_pdf
+    if not os.path.isfile(args.pdf):
+        print("文件不存在：%s" % args.pdf, file=sys.stderr)
+        return 2
+    try:
+        est = estimate_pdf(args.pdf, chunk_pages=args.part_pages, qps=args.qps)
+    except Exception as exc:
+        print("预估失败：%s" % str(exc)[:200], file=sys.stderr)
+        return 2
+    print("页数：%d | 字符量：%d | 含图页：%d" % (est["pages"], est["chars"], est["image_pages"]))
+    if est["parts"] > 1:
+        print("分段策略：%d 页/段 × %d 段（≥%d 页自动分段；--part-pages 可调）"
+              % (est["chunk_pages"], est["parts"], 40))
+        print("术语抽取：自动跳过（大文档防超时）")
+    print("预计时长：约 %s 分钟（qps=%s，经验系数 45s/页，实际视版面复杂度浮动）"
+          % (est["estimated_minutes"], args.qps))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="doc-holmes",
@@ -442,6 +491,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-ocr-proofread", action="store_true",
                    help="关闭 C 级 OCR 文本的 LLM 错字校对（默认开，走你配置的端点）")
     p.set_defaults(func=cmd_translate)
+
+    p = sub.add_parser("merge", help="合并多个 PDF（分段翻译产物合并回单档）")
+    p.add_argument("inputs", nargs="+", help="输入 PDF（按顺序）")
+    p.add_argument("-o", "--output", required=True, help="输出 PDF 路径")
+    p.set_defaults(func=cmd_merge)
+
+    p = sub.add_parser("split", help="按页范围拆分 PDF（如 1-25,26-50）")
+    p.add_argument("pdf", help="输入 PDF")
+    p.add_argument("--pages", required=True, dest="pages_spec",
+                   help="页范围表达式（1-based 含端点，如 1-25,26,30-）")
+    p.add_argument("-o", "--output", default=None, help="输出目录（默认输入旁 split_out/）")
+    p.set_defaults(func=cmd_split)
+
+    p = sub.add_parser("estimate", help="干跑预估：页数/字符量/分段策略/预计时长（不碰端点）")
+    p.add_argument("pdf", help="输入 PDF")
+    p.add_argument("--part-pages", type=int, default=25, help="假定的每段页数")
+    p.add_argument("--qps", type=float, default=1.0, help="假定请求速率（影响时长预估）")
+    p.set_defaults(func=cmd_estimate)
 
     p = sub.add_parser("batch", help="批量翻译目录下全部 PDF（断点续传 + 审计）")
     p.add_argument("input_dir", help="输入目录（递归收集 PDF）")

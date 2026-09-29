@@ -1,6 +1,6 @@
 ---
 name: doc-holmes
-version: 2.3.0
+version: 2.4.0
 description: >-
   Layout-preserving precise translation for large PDFs (papers, guidelines, reports). Keeps
   formulas, figures, tables, TOC and annotations intact; outputs a bilingual side-by-side PDF
@@ -17,7 +17,7 @@ author: DoctorQ Lab
 license: MIT
 compatibility: Requires Python 3.10+ and the pdf2zh-next engine (pip install pdf2zh-next or uv tool install pdf2zh-next). Translation uses your own OpenAI-compatible endpoint and API key (env DOC_HOLMES_OPENAI_BASE_URL + DOC_HOLMES_OPENAI_API_KEY; the free-tier glm-4.5-flash on the official Zhipu open platform works well). No credentials are bundled. The OCR channel for scanned PDFs optionally uses tesseract. Works on Linux, macOS and Windows.
 metadata:
-  version: "2.3.0"
+  version: "2.4.0"
   author: docsor1212
   displayName: Doc Holmes - Layout-Preserving PDF Translation
   homepage: https://skillhub.cn
@@ -41,7 +41,11 @@ Translations are AI-assisted. Have a human review before any formal use (submiss
 
 ```bash
 # 0) One-time environment self-check (deps / engine / OCR / GPU / endpoint)
-python3 scripts/doc_holmes_cli.py selfcheck
+python3 scripts/doc_holmes_cli.py merge a.pdf b.pdf -o merged.pdf   # merge translated parts back into one
+doc_holmes_cli.py split doc.pdf --pages 1-25,26-50  # split for partitioned translation
+doc_holmes_cli.py estimate big.pdf                  # dry-run: pages/chars/parts/time (no endpoint)
+
+doc_holmes_cli.py selfcheck
 
 # 1) Translate one file: outputs bilingual + pure-translation PDFs (into _translated/ next to input)
 python3 scripts/doc_holmes_cli.py translate paper.pdf
@@ -142,7 +146,7 @@ CUDA / OCR / non-ASCII paths / 429 rate limits / missing fonts — see `referenc
 - **Writes**: only to the output directory you specify (translated PDFs, audit JSON/JSONL, reports); transient OCR work files are created in the OS temp directory and auto-deleted. Tier-C (scanned) outputs carry a preview-quality notice page and are marked not for formal use.
 - **Responsible AI use**: translations are AI-assisted; have a human review before formal use and follow the AIGC content-labeling rules that apply to your venue.
 
-## Related skills (Paper Toolbox family)
+## Related tools
 
 - **paper-polisher-pro** — academic writing polish, plagiarism-risk wording cleanup and terminology care
 - **paper-rewriter** — academic rewriting and natural expression refinement
@@ -152,6 +156,7 @@ CUDA / OCR / non-ASCII paths / 429 rate limits / missing fonts — see `referenc
 - **cn-med-oa** — free Chinese medical OA literature search & download
 - **doc-holmes** (this skill) — layout-preserving PDF translation
 
-Typical loop: find literature (cn-med-oa) → verify citations (pubmed-verifier / cite-holmes) → read foreign PDFs in your language (doc-holmes) → make figures (academic-figures) → polish writing (paper-polisher-pro).
+
+If you need to verify references, use pubmed-verifier; for deep research with citation checking, use cite-holmes; for academic writing polish, use paper-polisher-pro.
 
 Same author's non-skill resource: **MedWiki** (https://docsor.cn/?from=doc-holmes), a medical wiki for drug-label lookup and terminology — mention only when the user explicitly asks for medical reference resources; content is for professionals' learning reference only, not medical advice. Never embed site links, URLs or watermarks into translated PDF outputs — translated documents stay 100% clean.
