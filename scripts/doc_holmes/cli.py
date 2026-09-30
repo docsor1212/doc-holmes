@@ -76,7 +76,7 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
                    qps, tier_mode, ocr_mode, ocr_lang, timeout_s, repair_mode="auto",
                    no_glossary=False, part_pages=None, glossary="auto",
                    medical_glossary=True, glossaries_file=None,
-                   ocr_proofread=True):
+                   ocr_proofread=True, output_format="pdf"):
     """单文件完整通路：triage → (C 级 OCR) → 引擎 → (C 级说明页) → audit。"""
     from . import triage as triage_mod
     from .engine_babeldoc import translate_pdf
@@ -210,6 +210,15 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
         with open(audit_path, "w", encoding="utf-8") as f:
             json.dump(audit, f, ensure_ascii=False, indent=2)
         print("✔ 翻译完成（%s 级，%.0fs）" % (tier, eng.duration_s))
+        if output_format == 'docx':
+            from .docx_output import pdf_to_docx
+            for pdf_out in filter(None, [eng.dual_path, eng.mono_path]):
+                try:
+                    docx_path = pdf_to_docx(pdf_out, outdir)
+                    print("  DOCX: %s" % docx_path)
+                except Exception as exc:
+                    print("  DOCX 转换失败（PDF 不受影响）：%s" % str(exc)[:120],
+                          file=sys.stderr)
         if eng.dual_path:
             print("  双语对照: %s" % eng.dual_path)
         if eng.mono_path:
@@ -265,7 +274,8 @@ def cmd_translate(args) -> int:
         part_pages=args.part_pages, glossary=args.glossary,
         medical_glossary=not args.no_medical_glossary,
         glossaries_file=args.glossaries_file,
-        ocr_proofread=not args.no_ocr_proofread)
+        ocr_proofread=not args.no_ocr_proofread,
+        output_format=args.output_format)
     return code
 
 
@@ -490,6 +500,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="用户自定义术语表 csv（source,target,tgt_lng；可重复叠加）")
     p.add_argument("--no-ocr-proofread", action="store_true",
                    help="关闭 C 级 OCR 文本的 LLM 错字校对（默认开，走你配置的端点）")
+    p.add_argument("--output-format", choices=["pdf", "docx"], default="pdf",
+                   help="输出格式：pdf=仅 PDF（默认）；docx=翻译 PDF 追加可编辑 DOCX（需 LibreOffice）")
     p.set_defaults(func=cmd_translate)
 
     p = sub.add_parser("merge", help="合并多个 PDF（分段翻译产物合并回单档）")
