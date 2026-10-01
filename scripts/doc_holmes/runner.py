@@ -135,6 +135,7 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
               no_glossary: bool = False, openai_timeout: int = None,
               part_pages: int = None, glossary: str = "auto",
               medical_glossary: bool = True, glossaries_file=None,
+              line_proofread=None, auto_lang: bool = False,
               progress=None) -> BatchResult:
     """批量翻译。审计逐文件落 outdir/audit.jsonl；失败文件产物回滚。"""
     if workers > 4:
@@ -189,6 +190,20 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
             except Exception as exc:
                 repair_stats = {"error": str(exc)[:200]}
 
+        # v2.6.0：自动语言检测（auto_lang=True 时覆盖 lang_in）
+        eff_lang_in = lang_in
+        if auto_lang and rep and rep.tier in ("A", "B"):
+            try:
+                from .lang_detect import detect_language
+                det = detect_language(real)
+                if det["lang"] != "en" and det["confidence"] > 0.15:
+                    eff_lang_in = det["lang"]
+                    print("[语言检测] %s → %s（置信度 %.0f%%）"
+                          % (os.path.basename(real), det["lang"],
+                             det["confidence"] * 100))
+            except Exception:
+                pass
+
         # 铁律⑤：engine 层 per-file 超时
         from .cli import _large_doc_policy
         eff_part, eff_no_glossary, _notices = _large_doc_policy(
@@ -215,7 +230,7 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
             real, file_out, base_url, api_key, model,
             page_count=rep.page_count if rep else None,
             timeout_s=per_file_timeout_s,
-            lang_in=lang_in, lang_out=lang_out, qps=qps, extra_args=extra,
+            lang_in=eff_lang_in, lang_out=lang_out, qps=qps, extra_args=extra,
             openai_timeout=openai_timeout)
 
 

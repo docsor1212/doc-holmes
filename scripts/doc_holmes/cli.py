@@ -76,7 +76,8 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
                    qps, tier_mode, ocr_mode, ocr_lang, timeout_s, repair_mode="auto",
                    no_glossary=False, part_pages=None, glossary="auto",
                    medical_glossary=True, glossaries_file=None,
-                   ocr_proofread=True, output_format="pdf"):
+                   ocr_proofread=True, output_format="pdf",
+                   auto_lang=False):
     """单文件完整通路：triage → (C 级 OCR) → 引擎 → (C 级说明页) → audit。"""
     from . import triage as triage_mod
     from .engine_babeldoc import translate_pdf
@@ -275,7 +276,8 @@ def cmd_translate(args) -> int:
         medical_glossary=not args.no_medical_glossary,
         glossaries_file=args.glossaries_file,
         ocr_proofread=not args.no_ocr_proofread,
-        output_format=args.output_format)
+        output_format=args.output_format,
+        auto_lang=args.auto_lang)
     return code
 
 
@@ -306,6 +308,7 @@ def cmd_batch(args) -> int:
         openai_timeout=ep.timeout, part_pages=args.part_pages,
         glossary=args.glossary, medical_glossary=not args.no_medical_glossary,
         glossaries_file=args.glossaries_file,
+        auto_lang=args.auto_lang,
         progress=prog if not args.quiet else None)
     if not args.quiet:
         print()
@@ -502,6 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="关闭 C 级 OCR 文本的 LLM 错字校对（默认开，走你配置的端点）")
     p.add_argument("--output-format", choices=["pdf", "docx"], default="pdf",
                    help="输出格式：pdf=仅 PDF（默认）；docx=翻译 PDF 追加可编辑 DOCX（需 LibreOffice）")
+    p.add_argument("--auto-lang", action="store_true",
+                   help="自动检测源语言（默认 en；auto_lang 后覆盖 --lang-in）")
     p.set_defaults(func=cmd_translate)
 
     p = sub.add_parser("merge", help="合并多个 PDF（分段翻译产物合并回单档）")
@@ -542,6 +547,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--glossary", choices=["auto", "off"], default="auto")
     p.add_argument("--no-medical-glossary", action="store_true")
     p.add_argument("--glossaries-file", action="append", default=None, metavar="CSV")
+    p.add_argument("--auto-lang", action="store_true",
+                   help="自动检测源语言（batch 通路）")
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(func=cmd_batch)
 
