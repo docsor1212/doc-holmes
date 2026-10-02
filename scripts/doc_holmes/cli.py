@@ -77,10 +77,27 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
                    no_glossary=False, part_pages=None, glossary="auto",
                    medical_glossary=True, glossaries_file=None,
                    ocr_proofread=True, output_format="pdf",
-                   auto_lang=False):
+                   auto_lang=False, password=None, tm_path=None,
+                   seed_terms=False):
     """单文件完整通路：triage → (C 级 OCR) → 引擎 → (C 级说明页) → audit。"""
     from . import triage as triage_mod
     from .engine_babeldoc import translate_pdf
+
+    # v2.8.0：加密 PDF 自动解密
+    from .glossary_seed import needs_decrypt, decrypt_pdf
+    if needs_decrypt(pdf):
+        if not password:
+            print("[加密] PDF 已加密但未提供密码。\n"
+                  "  · --password <密码> 提供密码后自动解密重试\n"
+                  "  · 或先手动解密（qpdf --decrypt in.pdf out.pdf）", file=sys.stderr)
+            return 2, None, None
+        outdir = outdir or "."
+        try:
+            pdf = decrypt_pdf(pdf, password, outdir)
+            print("[加密] 解密成功 → %s" % pdf)
+        except RuntimeError as exc:
+            print("[加密] 解密失败：%s" % exc, file=sys.stderr)
+            return 2, None, None
 
     os.makedirs(outdir, exist_ok=True)
     rep = triage_mod.triage_pdf(pdf)
@@ -179,6 +196,19 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
             print("[术语表] 用户术语表不存在或格式异常，已跳过：%s" % gf, file=sys.stderr)
     if gp:
         extra = extra + ["--glossaries", ",".join(gp)]   # 引擎按逗号 split，不能带空格
+    # v2.8.0：术语表智能种子（从源 PDF 抽取高频术语与内置表合并）
+    if seed_terms and lang_in == "en" and lang_out == "zh" and rep.tier in ("A", "B") \
+            and not no_glossary and not eff_no_glossary and medical_glossary:
+        from .glossary_seed import seed_glossary
+        built_in = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "assets", "medical_glossary.csv")
+        seed_dir = os.path.join(outdir, "_glossary_seed")
+        try:
+            seeded = seed_glossary(pdf, built_in, seed_dir, top_n=20)
+            extra = extra + ["--glossaries", seeded]
+            print("[术语种子] 已从源 PDF 抽取高频术语与内置表合并注入")
+        except Exception as exc:
+            print("[术语种子] 抽取失败（不影响翻译）：%s" % str(exc)[:100], file=sys.stderr)
     eng = translate_pdf(work_pdf, outdir, ep.base_url, ep.api_key, ep.model,
                         page_count=rep.page_count, timeout_s=timeout_s,
                         lang_in=lang_in, lang_out=lang_out, qps=qps,
@@ -277,7 +307,8 @@ def cmd_translate(args) -> int:
         glossaries_file=args.glossaries_file,
         ocr_proofread=not args.no_ocr_proofread,
         output_format=args.output_format,
-        auto_lang=args.auto_lang)
+        auto_lang=args.auto_lang,
+        password=args.password, seed_terms=not args.no_seed_terms)
     return code
 
 
@@ -503,6 +534,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="用户自定义术语表 csv（source,target,tgt_lng；可重复叠加）")
     p.add_argument("--no-ocr-proofread", action="store_true",
                    help="关闭 C 级 OCR 文本的 LLM 错字校对（默认开，走你配置的端点）")
+    p.add_argument("--password", default=None, help="加密 PDF 的密码（自动 qpdf 解密）")
+    p.add_argument("--no-seed-terms", action="store_true",
+                   help="关闭术语表智能种子（默认从源 PDF 抽取高频术语与内置表合并）")
     p.add_argument("--output-format", choices=["pdf", "docx"], default="pdf",
                    help="输出格式：pdf=仅 PDF（默认）；docx=翻译 PDF 追加可编辑 DOCX（需 LibreOffice）")
     p.add_argument("--auto-lang", action="store_true",
