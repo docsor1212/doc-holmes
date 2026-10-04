@@ -136,6 +136,7 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
               part_pages: int = None, glossary: str = "auto",
               medical_glossary: bool = True, glossaries_file=None,
               line_proofread=None, auto_lang: bool = False,
+              ocr_mode: str = "auto", ocr_lang: str = "eng",
               progress=None) -> BatchResult:
     """批量翻译。审计逐文件落 outdir/audit.jsonl；失败文件产物回滚。"""
     if workers > 4:
@@ -171,15 +172,36 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
         rep = triage_mod.triage_pdf(real) if do_triage else None
         tier = force_tier or (rep.tier if rep else "?")
 
-        # v1.0 批量通路不自动 OCR：C 级显式跳过并给指引（单文件 translate 支持 --ocr auto）
-        if tier == "C":
-            return {"path": rel, "sha256": digest, "tier": "C", "status": "skipped",
-                    "reason": "tier_C_needs_ocr: 扫描件请用单文件 translate --ocr auto"
-                              "（批量 OCR 通道在路线图）"}
-
-        # 每文件独立子目录：并发/回滚互不波及（评审 P0-2）
+        # 每文件独立子目录：并发/回滚互不波及（评审 P0-2）— 需在 tier C 前定义
         file_out = os.path.join(outdir, digest[:12])
         os.makedirs(file_out, exist_ok=True)
+
+        # v2.9.0：C 级走 rebuild→proofread→translate 完整管线（不再跳过）
+        if tier == "C":
+            ocr_mode_eff = ocr_mode if ocr_mode else "auto"
+            if ocr_mode_eff == "off":
+                return {"path": rel, "sha256": digest, "tier": "C",
+                        "status": "skipped",
+                        "reason": "tier_C_ocr_disabled: 扫描件 OCR 已关闭"}
+            # rebuild→proofread（translate 单文件同款管线）
+            try:
+                from .ocr_adapter import rebuild_repaired_textlayer
+                from .glossary_seed import needs_decrypt, decrypt_pdf
+                if needs_decrypt(real) and password:
+                    real = decrypt_pdf(real, password, file_out)
+                tmp_ocr = os.path.join(file_out, "_rebuild.pdf")
+                line_pf = None
+                if line_proofread:
+                    line_pf = line_proofread
+                ocr_stats = rebuild_repaired_textlayer(
+                    real, tmp_ocr, lang=ocr_lang, line_proofread=line_pf)
+                real = tmp_ocr
+            except Exception as exc:
+                import traceback as _tb
+                _tb.print_exc()
+                return {"path": rel, "sha256": digest, "tier": "C",
+                        "status": "failed",
+                        "error": "tier_C_rebuild_failed: %s" % str(exc)[:200]}
 
         # B 级图层去重修复（plan Phase 2）：auto=B 级自动，off 关闭
         repair_stats = None
@@ -265,7 +287,7 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
         except Exception as exc:
             real = os.path.realpath(pdf)
             rel = os.path.relpath(real, os.path.realpath(input_dir))
-            return {"path": rel, "sha256": None, "status": "failed",
+            return {"path": rel, "sha256": None, "tier": "?", "status": "failed",
                     "error": "unhandled: %r" % exc}
 
     try:

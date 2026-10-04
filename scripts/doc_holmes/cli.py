@@ -196,19 +196,8 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
             print("[术语表] 用户术语表不存在或格式异常，已跳过：%s" % gf, file=sys.stderr)
     if gp:
         extra = extra + ["--glossaries", ",".join(gp)]   # 引擎按逗号 split，不能带空格
-    # v2.8.0：术语表智能种子（从源 PDF 抽取高频术语与内置表合并）
-    if seed_terms and lang_in == "en" and lang_out == "zh" and rep.tier in ("A", "B") \
-            and not no_glossary and not eff_no_glossary and medical_glossary:
-        from .glossary_seed import seed_glossary
-        built_in = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "assets", "medical_glossary.csv")
-        seed_dir = os.path.join(outdir, "_glossary_seed")
-        try:
-            seeded = seed_glossary(pdf, built_in, seed_dir, top_n=20)
-            extra = extra + ["--glossaries", seeded]
-            print("[术语种子] 已从源 PDF 抽取高频术语与内置表合并注入")
-        except Exception as exc:
-            print("[术语种子] 抽取失败（不影响翻译）：%s" % str(exc)[:100], file=sys.stderr)
+    # v2.8.0 术语种子功能暂缓（glossary_seed CSV 空 target 行导致引擎崩溃，待 v2.10 修复）
+    # 模块保留在 glossary_seed.py 供后续完善
     eng = translate_pdf(work_pdf, outdir, ep.base_url, ep.api_key, ep.model,
                         page_count=rep.page_count, timeout_s=timeout_s,
                         lang_in=lang_in, lang_out=lang_out, qps=qps,
