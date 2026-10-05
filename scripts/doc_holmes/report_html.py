@@ -40,6 +40,14 @@ def render_html(result, glossary_note: str = "") -> str:
             flags.append("跳过术语")
         if e.get("rolled_back"):
             flags.append("已回滚")
+        # v2.10.0：与 report.md 备注列同款的质量热点/种子标记
+        low = (e.get("ocr") or {}).get("low_conf_pages") or []
+        if low:
+            flags.append("低置信页:" + ",".join(str(x) for x in low[:8])
+                         + ("…" if len(low) > 8 else ""))
+        seeded = (e.get("glossary_seeding") or {}).get("seeded") or []
+        if seeded:
+            flags.append("种子术语%d" % len(seeded))
         flag_s = "；".join(flags)
         rows.append(
             "<tr class='r-%s'><td>%s</td><td>%s</td><td>%s</td><td>%ss</td>"

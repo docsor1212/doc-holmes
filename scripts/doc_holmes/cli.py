@@ -72,12 +72,21 @@ def _large_doc_policy(page_count, part_pages, glossary):
     return eff_part, eff_no_glossary, notices
 
 
+def _hotspot_note(ocr_stats):
+    """C级页级质量热点一句话（v2.10.0）；无热点返回 None。"""
+    low = (ocr_stats or {}).get("low_conf_pages") or []
+    if not low:
+        return None
+    show = ",".join(str(p) for p in low[:12]) + ("…" if len(low) > 12 else "")
+    return "低置信页 %d 页（建议人工复核）：%s" % (len(low), show)
+
+
 def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mono,
                    qps, tier_mode, ocr_mode, ocr_lang, timeout_s, repair_mode="auto",
                    no_glossary=False, part_pages=None, glossary="auto",
                    medical_glossary=True, glossaries_file=None,
                    ocr_proofread=True, output_format="pdf",
-                   auto_lang=False, password=None, tm_path=None,
+                   auto_lang=False, password=None,
                    seed_terms=False):
     """单文件完整通路：triage → (C 级 OCR) → 引擎 → (C 级说明页) → audit。"""
     from . import triage as triage_mod
@@ -118,9 +127,6 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
     if tier == "C":
         # OCR 重建层（图像+隐形文本）会被引擎的扫插件检测拦下，此为官方通道开关
         extra += ["--skip-scanned-detection"]
-    if no_glossary or eff_no_glossary:
-        # 大文档术语抽取会构造巨型提示导致超时（STTT 案例），可整体关闭（append 勿覆盖）
-        extra.append("--no-auto-extract-glossary")
 
     # B 级图层重复检测（只读；on=全文档强制含 A 级，auto=仅 B 级，off=关闭）
     repair_stats = None
@@ -177,6 +183,9 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
         else:                                    # v2.0.0 修复重建层
             print("[C级] OCR 完成：%(pages)d 页，%(lines)d 行，共 %(chars)d 字符"
                   % ocr_stats)
+        hotspot = _hotspot_note(ocr_stats)
+        if hotspot:
+            print("[C级] %s" % hotspot)
         work_pdf = tmp_ocr
 
     if eff_part:
@@ -194,13 +203,49 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
             gp.append(os.path.abspath(gf))
         else:
             print("[术语表] 用户术语表不存在或格式异常，已跳过：%s" % gf, file=sys.stderr)
+    # v2.10.0：文档术语自适应种子（LLM 翻译 → CSV，永不空 target；
+    # v2.8.0 空 target 行致引擎崩溃的机制层根治，--no-seed-terms 自此真接线）
+    seed_stats = None
+    if seed_terms and lang_in == "en" and lang_out == "zh" and not eff_no_glossary:
+        try:
+            from .glossary_seed import seed_glossary, translate_terms_llm
+            seed_stats = seed_glossary(
+                work_pdf, glossary_path() if medical_glossary else None, outdir,
+                translate_fn=lambda terms: translate_terms_llm(
+                    terms, ep.base_url, ep.api_key, ep.model,
+                    timeout=ep.timeout or 60))
+            if seed_stats.get("path"):
+                gp.append(seed_stats["path"])
+                print("[术语表] 自适应种子：注入 %d 个文档术语（内置表已覆盖 %d 个）"
+                      % (len(seed_stats["seeded"]),
+                         seed_stats.get("builtin_covered", 0)))
+        except Exception as exc:
+            print("[术语表] 自适应种子失败（不影响翻译）：%s" % str(exc)[:120],
+                  file=sys.stderr)
+            seed_stats = {"error": str(exc)[:200]}
+    # v2.10.0 评审 P0-1/P1-3：注入外部术语表时必须关闭引擎自动术语抽取——
+    # 引擎抽取阶段与用户表并存存在挂死实例（battery 6/6 实锤），且抽取非空时
+    # 用户表被引擎遮蔽（注入形同虚设）。关抽取 = 注入真实生效 + 挂死阶段不存在。
+    if gp or no_glossary or eff_no_glossary:
+        extra.append("--no-auto-extract-glossary")
     if gp:
         extra = extra + ["--glossaries", ",".join(gp)]   # 引擎按逗号 split，不能带空格
-    # v2.8.0 术语种子功能暂缓（glossary_seed CSV 空 target 行导致引擎崩溃，待 v2.10 修复）
-    # 模块保留在 glossary_seed.py 供后续完善
+    # v2.10.0：translate 通路 auto_lang 实装（此前仅 batch 生效，translate 为死旗标）
+    eff_lang_in = lang_in
+    if auto_lang and tier in ("A", "B"):
+        try:
+            from .lang_detect import detect_language
+            det = detect_language(pdf)
+            if det["lang"] != "en" and det["confidence"] > 0.15:
+                eff_lang_in = det["lang"]
+                print("[语言检测] %s → %s（置信度 %.0f%%）"
+                      % (os.path.basename(pdf), det["lang"],
+                         det["confidence"] * 100))
+        except Exception:
+            pass
     eng = translate_pdf(work_pdf, outdir, ep.base_url, ep.api_key, ep.model,
                         page_count=rep.page_count, timeout_s=timeout_s,
-                        lang_in=lang_in, lang_out=lang_out, qps=qps,
+                        lang_in=eff_lang_in, lang_out=lang_out, qps=qps,
                         pages=pages, no_dual=no_dual, no_mono=no_mono,
                         openai_timeout=ep.timeout,
                         extra_args=extra)
@@ -215,6 +260,7 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
         "path": os.path.realpath(pdf), "tier": tier,
         "triage": rep.to_dict(), "engine": eng.to_dict(),
         "ocr": ocr_stats, "repair": repair_stats, "ok": eng.ok,
+        "glossary_seeding": seed_stats,
         "large_doc_policy": {"part_pages": eff_part or 0,
                              "glossary_skipped": bool(eff_no_glossary or no_glossary)},
     }
@@ -247,6 +293,9 @@ def _translate_one(pdf, outdir, ep, *, lang_in, lang_out, pages, no_dual, no_mon
     print("✘ 翻译失败（%s）" % (audit["engine"]["stderr_tail"].splitlines()[-1][:160]
                              if audit["engine"]["stderr_tail"] else "原因未知"),
           file=sys.stderr)
+    if seed_stats and seed_stats.get("path"):
+        print("  提示：本次注入了实验性种子术语表，可去掉 --seed-terms 重试。",
+              file=sys.stderr)
     return 3, rep, audit
 
 
@@ -297,7 +346,7 @@ def cmd_translate(args) -> int:
         ocr_proofread=not args.no_ocr_proofread,
         output_format=args.output_format,
         auto_lang=args.auto_lang,
-        password=args.password, seed_terms=not args.no_seed_terms)
+        password=args.password, seed_terms=args.seed_terms)
     return code
 
 
@@ -318,6 +367,13 @@ def cmd_batch(args) -> int:
         sys.stdout.write("\r[%d/%d]" % (done, total))
         sys.stdout.flush()
 
+    # v2.10.0：C 级 LLM 错字校对真实接线（v2.9.0 声明与实现脱节的根治）
+    line_proofread = None
+    if not args.no_ocr_proofread:
+        from .proofread import make_page_proofread
+        line_proofread = make_page_proofread(
+            ep.base_url, ep.api_key, ep.model, timeout=ep.timeout or 120)
+
     result = run_batch(
         args.input_dir, args.output, ep.base_url, ep.api_key, ep.model,
         workers=args.workers, resume=not args.no_resume,
@@ -328,6 +384,9 @@ def cmd_batch(args) -> int:
         openai_timeout=ep.timeout, part_pages=args.part_pages,
         glossary=args.glossary, medical_glossary=not args.no_medical_glossary,
         glossaries_file=args.glossaries_file,
+        line_proofread=line_proofread,
+        password=args.password,
+        seed_terms=args.seed_terms,
         auto_lang=args.auto_lang,
         progress=prog if not args.quiet else None)
     if not args.quiet:
@@ -524,8 +583,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-ocr-proofread", action="store_true",
                    help="关闭 C 级 OCR 文本的 LLM 错字校对（默认开，走你配置的端点）")
     p.add_argument("--password", default=None, help="加密 PDF 的密码（自动 qpdf 解密）")
-    p.add_argument("--no-seed-terms", action="store_true",
-                   help="关闭术语表智能种子（默认从源 PDF 抽取高频术语与内置表合并）")
+    p.add_argument("--seed-terms", action="store_true",
+                   help="开启术语自适应种子（实验性，默认关）：抽取文档高频术语，"
+                        "经你配置的端点翻译后注入术语表，提升文档内术语一致性；"
+                        "个别文档组合可能触发引擎错误，失败时可去掉本旗标重试")
     p.add_argument("--output-format", choices=["pdf", "docx"], default="pdf",
                    help="输出格式：pdf=仅 PDF（默认）；docx=翻译 PDF 追加可编辑 DOCX（需 LibreOffice）")
     p.add_argument("--auto-lang", action="store_true",
@@ -570,6 +631,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--glossary", choices=["auto", "off"], default="auto")
     p.add_argument("--no-medical-glossary", action="store_true")
     p.add_argument("--glossaries-file", action="append", default=None, metavar="CSV")
+    p.add_argument("--password", default=None,
+                   help="加密 PDF 的密码（自动 qpdf 解密，批量全分级生效）")
+    p.add_argument("--no-ocr-proofread", action="store_true",
+                   help="关闭 C 级 OCR 文本的 LLM 错字校对（默认开，走你配置的端点）")
+    p.add_argument("--seed-terms", action="store_true",
+                   help="开启术语自适应种子（实验性，默认关，同 translate）")
     p.add_argument("--auto-lang", action="store_true",
                    help="自动检测源语言（batch 通路）")
     p.add_argument("--quiet", action="store_true")

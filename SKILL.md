@@ -1,6 +1,6 @@
 ---
 name: doc-holmes
-version: 2.4.0
+version: 2.10.0
 description: >-
   Layout-preserving precise translation for large PDFs (papers, guidelines, reports). Keeps
   formulas, figures, tables, TOC and annotations intact; outputs a bilingual side-by-side PDF
@@ -17,7 +17,7 @@ author: DoctorQ Lab
 license: MIT
 compatibility: Requires Python 3.10+ and the pdf2zh-next engine (pip install pdf2zh-next or uv tool install pdf2zh-next). Translation uses your own OpenAI-compatible endpoint and API key (env DOC_HOLMES_OPENAI_BASE_URL + DOC_HOLMES_OPENAI_API_KEY; the free-tier glm-4.5-flash on the official Zhipu open platform works well). No credentials are bundled. The OCR channel for scanned PDFs optionally uses tesseract. Works on Linux, macOS and Windows.
 metadata:
-  version: "2.4.0"
+  version: "2.10.0"
   author: docsor1212
   displayName: Doc Holmes - Layout-Preserving PDF Translation
   homepage: https://skillhub.cn
@@ -40,12 +40,13 @@ Translations are AI-assisted. Have a human review before any formal use (submiss
 ## Quick start
 
 ```bash
-# 0) One-time environment self-check (deps / engine / OCR / GPU / endpoint)
+# 0) Pre-flight triage (zero dependencies, works before the engine is installed)
+doc_holmes_cli.py triage paper.pdf --json          # tier A/B/C grading - know what you can promise
+doc_holmes_cli.py estimate big.pdf                 # pages/chars/partition/time estimate (no endpoint)
 python3 scripts/doc_holmes_cli.py merge a.pdf b.pdf -o merged.pdf   # merge translated parts back into one
 doc_holmes_cli.py split doc.pdf --pages 1-25,26-50  # split for partitioned translation
-doc_holmes_cli.py estimate big.pdf                  # dry-run: pages/chars/parts/time (no endpoint)
 
-doc_holmes_cli.py selfcheck
+doc_holmes_cli.py selfcheck                        # after engine install: env check (engine/OCR/GPU/endpoint)
 
 # 1) Translate one file: outputs bilingual + pure-translation PDFs (into _translated/ next to input)
 python3 scripts/doc_holmes_cli.py translate paper.pdf
@@ -70,11 +71,19 @@ SiliconFlow (`https://api.siliconflow.cn/v1`) or any OpenAI-compatible endpoint 
 
 | Tier | Meaning | Translation promise |
 |---|---|---|
-| **A** | Clean born-digital: dense text layer (≥500 chars/page), no duplicate layers, no artifacts | High fidelity — formulas/figures/TOC preserved, safe to use. **Oversized PDFs (≥40 pages) are auto-partitioned (25 pages/part) and skip glossary extraction automatically. A bundled 45-term medical EN→ZH glossary is injected for consistent terminology (disable with `--no-medical-glossary`)** |
+| **A** | Clean born-digital: dense text layer (≥500 chars/page), no duplicate layers, no artifacts | High fidelity — formulas/figures/TOC preserved, safe to use. **Oversized PDFs (≥40 pages) are auto-partitioned (25 pages/part) and skip glossary extraction automatically. A bundled medical EN→ZH glossary of core terms is injected for consistent terminology (disable with `--no-medical-glossary`)** |
 | **B** | Has a text layer but noisy: duplicated layers / watermarks / artifact tokens | Translatable; **span-level duplicate-layer detection** (exact counts in audit) + noise report. Redaction surgery is deliberately NOT applied (overlapping glyphs make it destructive) |
 | **C** | Scanned / no usable text layer / encrypted | **Experimental (preview quality)**: OCR rebuilds a **line-repaired invisible text layer**, then an LLM proofreading pass (your configured endpoint) fixes recognition errors before translation; output carries a "preview quality" notice page — not for submission or clinical use |
 
 `triage` can run standalone (no translation), supports directories and `--json`; grading rules: `references/triage.md`.
+
+## Terminology consistency & page-level quality hotspots (v2.10.0)
+
+en→zh translation injects a bundled medical glossary of core terms by default (`--no-medical-glossary` to disable). On top of that there is **adaptive term seeding** (**experimental, off by default**, enable with `--seed-terms`): high-frequency domain terms are extracted from the source document (up to 12), translated via **one small request to your configured endpoint**, merged with the built-in table and passed to the engine — improving term consistency across the document. Terms already covered by the built-in table are skipped; terms whose translation comes back empty or missing are never written into the glossary (empty-target rows are a known engine crasher). Seeding failures are recorded in the audit and never block translation; oversized documents skip seeding automatically. It is off by default because certain document/glossary combinations can trigger engine glossary-pathway errors (reproduced in live-network review) — stability comes first.
+
+**Injected glossaries disable engine auto-extraction**: whenever any glossary is injected (built-in / user CSV / seeded), doc-holmes also tells the engine to skip its own automatic term extraction — the engine's auto-extracted table **shadows** injected glossaries when non-empty (making injection a no-op), and co-existing with injected glossaries it has real-world hang instances (6/6 reproduced in the v2.10.0 live-network review). With extraction off, your glossary is what the engine actually uses.
+
+**Tier-C page-level quality hotspots**: during OCR rebuild, per-page recognition confidence is aggregated; pages whose mean confidence is low (with enough words to be statistically meaningful) are recorded in the audit as `ocr.low_conf_pages` and surfaced in translate output and the batch report — so human review can target specific pages instead of proofreading the whole document. Conservative by design: pages with too few words (covers, full-page figures) are never flagged, avoiding false alarms.
 
 ## Commands
 
@@ -84,11 +93,12 @@ doc_holmes_cli.py translate paper.pdf [-o dir] \
   [--pages 1-5] [--lang-in en] [--lang-out zh] \
   [--tier auto|A|B|C] [--ocr auto|off] [--ocr-lang eng] [--repair auto|on|off] \
   [--part-pages N] [--glossary auto|off] [--no-glossary] [--no-medical-glossary] \
-  [--no-ocr-proofread] [--glossaries-file CSV] \
+  [--no-ocr-proofread] [--seed-terms] [--glossaries-file CSV] [--password pw] \
+  [--output-format pdf|docx] [--auto-lang] \
   [--no-dual|--no-mono] [--qps 4] [--timeout-s 600]
 doc_holmes_cli.py batch <dir> -o <outdir> \
   [--workers 1-4] [--no-resume] [--blacklist f1 f2] [--tier auto] [--repair auto|on|off] [--no-glossary] \
-  [--no-medical-glossary]
+  [--no-medical-glossary] [--no-ocr-proofread] [--seed-terms] [--password pw] [--auto-lang]
 doc_holmes_cli.py report <outdir>                  # aggregate audit.jsonl -> report.md
 doc_holmes_cli.py selfcheck [--net]                # env check; --net also pings the endpoint
 ```
@@ -116,8 +126,8 @@ Note: CLI help texts are in Chinese (the author's primary audience); the flags a
 | Can do | Won't do / limited |
 |---|---|
 | en→zh as the primary, validated direction | other language pairs work but are not quality-validated yet |
-| Tier A high fidelity; formulas/figures kept as-is | **tier C is preview quality only** — OCR errors will leak into the text |
-| Two-column / multi-column layout and headers (engine-native) | encrypted PDFs must be decrypted first (e.g. `qpdf --decrypt`) |
+| Tier A high fidelity; formulas/figures kept as-is | **tier C is preview quality only** — OCR errors will leak into the text (the low-confidence page list tells you where to look) |
+| Two-column / multi-column layout and headers (engine-native) | encrypted PDFs: pass `--password` for automatic decryption (requires local qpdf) |
 | Batch resume, rollback on failure, full audit trail | handwriting / low-quality scans: no recognition guarantee |
 | Clean output with no tool watermark (default no_watermark) | no rewriting or polishing of the translation (that is paper-polisher-pro's job) |
 
@@ -126,13 +136,13 @@ Note: CLI help texts are in Chinese (the author's primary audience); the flags a
 - Pointing at a GLM Coding Plan subscription endpoint → the tool asks for a one-time billing acknowledgment (`DOC_HOLMES_ALLOW_CODING_ENDPOINT=1`), because plan quota does not apply outside coding tools and usage is billed against your balance. Not a bug - this prevents surprise charges.
 - Restarting an interrupted `batch` from scratch → unnecessary; resume is on by default, use `--no-resume` to force a rerun.
 - Engine installed but selfcheck can't find it → set `DOC_HOLMES_PDF2ZH_BIN` to the full `pdf2zh_next` path.
-- Feeding a directory to `translate` → refused with a hint; directories are `batch`'s job. Non-PDF inputs (DOCX/PPTX/images) are not supported.
+- Feeding a directory to `translate` → refused with a hint; directories are `batch`'s job. DOCX/PPT/PPTX/XLSX/ODS inputs are converted to PDF via LibreOffice first (install libreoffice); pure image inputs are not supported.
 - Trusting tier-C output for anything formal → the notice page and `tier=C` audit field exist so this cannot happen silently.
 - Translation timing out on very large / text-dense PDFs → since v2.0.0 this is automatic: documents ≥40 pages are partitioned (25 pages/part, `--part-pages` to tune) and glossary extraction is skipped (`--glossary off` to force-skip, `--part-pages 0` to disable partitioning). Manual fallbacks: `--no-glossary`, `DOC_HOLMES_OPENAI_TIMEOUT` (default 180s), `--pages`.
 
 ## Batch engineering guarantees
 
-Eight iron rules, each backed by a test: realpath normalization, excluded directories (`_duplicates/` etc.), set-based blacklist/done tracking, single process by default (`--workers ≤4`), per-file timeout, watchdog stall detection, `audit.jsonl` resume, and a compile gate in the test chain. On failure the file's partial outputs are rolled back immediately (per-file private output directory), so a failed run never leaves half-written PDFs. Tier B files get span-level duplicate detection automatically (`--repair off` to disable). Scanned (tier C) files are skipped in batch with guidance — OCR is a per-file `translate --ocr auto` decision. Details: `references/batch-iron-rules.md`.
+Eight iron rules, each backed by a test: realpath normalization, excluded directories (`_duplicates/` etc.), set-based blacklist/done tracking, single process by default (`--workers ≤4`), per-file timeout, watchdog stall detection, `audit.jsonl` resume, and a compile gate in the test chain. On failure the file's partial outputs are rolled back immediately (per-file private output directory), so a failed run never leaves half-written PDFs. Tier B files get span-level duplicate detection automatically (`--repair off` to disable). Scanned (tier C) files run the same OCR-rebuild + LLM-proofreading pipeline as single-file translate (`--no-ocr-proofread` to disable), with per-file OCR stats and the low-confidence page list recorded in the audit. Details: `references/batch-iron-rules.md`.
 
 ## Troubleshooting
 
@@ -140,7 +150,7 @@ CUDA / OCR / non-ASCII paths / 429 rate limits / missing fonts — see `referenc
 
 ## Security & behavior declaration
 
-- **Local-first (this tool)**: triage, duplicate detection, repair statistics, batch orchestration and reports all run locally. doc-holmes makes network calls only to the endpoint **you** configured: translation text, and (for tier-C scans) OCR text sent for error-proofreading. Plus an explicit opt-in `selfcheck --net` ping. No telemetry, no auto-updates, no runtime downloads by this tool. (Note: the third-party engine may fetch its own layout assets on first run - a documented engine behavior.)
+- **Local-first (this tool)**: triage, duplicate detection, repair statistics, batch orchestration and reports all run locally. doc-holmes makes network calls only to the endpoint **you** configured: translation text, (for tier-C scans) OCR text sent for error-proofreading, and adaptive term-seeding translation requests. Plus an explicit opt-in `selfcheck --net` ping. No telemetry, no auto-updates, no runtime downloads by this tool. (Note: the third-party engine may fetch its own layout assets on first run - a documented engine behavior.)
 - **Data boundary**: PDF text is transmitted only to your configured OpenAI-compatible endpoint; API keys stay in your environment variables or your local config file, are passed only as a launch argument to the local engine process, and are never logged or sent anywhere else.
 - **Subprocess isolation**: the translation engine (pdf2zh-next/BabelDOC) and tesseract are invoked as subprocesses with argument lists (no shell), under per-file timeouts; the package vendors no third-party code.
 - **Writes**: only to the output directory you specify (translated PDFs, audit JSON/JSONL, reports); transient OCR work files are created in the OS temp directory and auto-deleted. Tier-C (scanned) outputs carry a preview-quality notice page and are marked not for formal use.

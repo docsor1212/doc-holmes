@@ -33,6 +33,36 @@ NOTICE_EN = (
     "Recognition errors are possible. For preview only - NOT for clinical use,\n"
     "submission, or formal citation.")
 
+LOW_CONF_THRESHOLD = 60.0
+LOW_CONF_MIN_WORDS = 8
+
+
+def page_mean_conf(confs):
+    """页均 OCR 置信度（0-100）：忽略 tesseract 的 -1（非文本行）；无有效值 None。"""
+    valid = [c for c in (confs or []) if c is not None and c >= 0]
+    if not valid:
+        return None
+    return sum(valid) / len(valid)
+
+
+def low_conf_pages_from(page_confidence, word_counts=None,
+                        threshold=LOW_CONF_THRESHOLD,
+                        min_words=LOW_CONF_MIN_WORDS):
+    """低置信页清单（1-based 升序）：页均 conf < threshold 且词数达标。
+
+    词数过少的页（封面/整页图版）均值无统计意义，不判低置信——宁可漏报，
+    不给用户假警报（保守侧原则）。
+    """
+    out = []
+    for page in sorted(page_confidence, key=lambda p: int(p)):
+        mean = page_confidence[page]
+        if mean is None or mean >= threshold:
+            continue
+        if word_counts is not None and (word_counts.get(page) or 0) < min_words:
+            continue
+        out.append(int(page))
+    return out
+
 
 def tesseract_info() -> dict:
     """能力探测：tesseract 可执行文件、版本、可用语言包。"""
@@ -212,7 +242,8 @@ def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
         HAS_WORDNINJA = False
 
     stats = {"pages": 0, "lines": 0, "lines_repaired": 0, "chars": 0,
-             "pages_ocr_failed": 0, "noise_lines_dropped": 0, "lines_glue_split": 0}
+             "pages_ocr_failed": 0, "noise_lines_dropped": 0, "lines_glue_split": 0,
+             "page_confidence": {}, "page_words": {}}
     os.makedirs(os.path.dirname(os.path.realpath(out_pdf)) or ".", exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="doc_holmes_ocr_") as tmp:
         out_doc = pymupdf.open()
@@ -239,6 +270,7 @@ def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
                 continue
             # 解析 TSV，按 (block, par, line) 聚合词框
             words = []
+            page_confs = []
             tsv_path = base + ".tsv"
             if os.path.isfile(tsv_path):
                 with open(tsv_path, encoding="utf-8", errors="ignore") as f:
@@ -258,7 +290,18 @@ def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
                         if lvl != 5 or len(cols) < 12:
                             continue
                         left, top, w, h = int(cols[6]), int(cols[7]), int(cols[8]), int(cols[9])
+                        try:
+                            conf = float(cols[10])
+                        except ValueError:
+                            conf = -1.0
+                        if conf >= 0:
+                            page_confs.append(conf)
                         words.append((bk, par, ln, left, top, w, h, cols[11]))
+            # v2.10.0：页级置信度聚合（质量热点报告的数据源）
+            mean_conf = page_mean_conf(page_confs)
+            if mean_conf is not None:
+                stats["page_confidence"][str(i + 1)] = round(mean_conf, 1)
+                stats["page_words"][str(i + 1)] = len(page_confs)
             # 聚合成行
             lines = {}
             for bk, par, ln, left, top, w, h, text in words:
@@ -342,6 +385,10 @@ def rebuild_repaired_textlayer(pdf: str, out_pdf: str, *, lang: str = "eng",
             if progress:
                 progress(i + 1, src.page_count)
         src.close()
+        int_means = {int(k): v for k, v in stats["page_confidence"].items()}
+        int_words = {int(k): v for k, v in stats["page_words"].items()}
+        stats["low_conf_pages"] = low_conf_pages_from(int_means,
+                                                      word_counts=int_words)
         out_doc.save(out_pdf, garbage=3, deflate=True)
         out_doc.close()
     return stats

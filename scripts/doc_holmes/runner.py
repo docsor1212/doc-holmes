@@ -137,6 +137,7 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
               medical_glossary: bool = True, glossaries_file=None,
               line_proofread=None, auto_lang: bool = False,
               ocr_mode: str = "auto", ocr_lang: str = "eng",
+              password: str = None, seed_terms: bool = False,
               progress=None) -> BatchResult:
     """批量翻译。审计逐文件落 outdir/audit.jsonl；失败文件产物回滚。"""
     if workers > 4:
@@ -176,6 +177,25 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
         file_out = os.path.join(outdir, digest[:12])
         os.makedirs(file_out, exist_ok=True)
 
+        # v2.10.0：加密 PDF 批量解密（v2.8.0 遗留 NameError 根治，全分级生效）
+        from .glossary_seed import needs_decrypt, decrypt_pdf
+        orig_name = os.path.basename(real)
+        if needs_decrypt(real):
+            if not password:
+                return {"path": rel, "sha256": digest, "tier": tier,
+                        "status": "failed",
+                        "error": "encrypted_needs_password: PDF 已加密，"
+                                 "请用 --password 提供密码后重试"
+                                 "（或先 qpdf --decrypt 手动解密）"}
+            try:
+                real = decrypt_pdf(real, password, file_out)
+            except Exception as exc:
+                return {"path": rel, "sha256": digest, "tier": tier,
+                        "status": "failed",
+                        "error": "decrypt_failed: %s" % str(exc)[:200]}
+
+        ocr_stats = None
+        tmp_ocr = None
         # v2.9.0：C 级走 rebuild→proofread→translate 完整管线（不再跳过）
         if tier == "C":
             ocr_mode_eff = ocr_mode if ocr_mode else "auto"
@@ -186,10 +206,8 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
             # rebuild→proofread（translate 单文件同款管线）
             try:
                 from .ocr_adapter import rebuild_repaired_textlayer
-                from .glossary_seed import needs_decrypt, decrypt_pdf
-                if needs_decrypt(real) and password:
-                    real = decrypt_pdf(real, password, file_out)
-                tmp_ocr = os.path.join(file_out, "_rebuild.pdf")
+                # 重建层以原始文件名落盘：引擎产物沿用原文件主干名（对齐单文件通路）
+                tmp_ocr = os.path.join(file_out, orig_name)
                 line_pf = None
                 if line_proofread:
                     line_pf = line_proofread
@@ -232,9 +250,12 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
             rep.page_count if rep else None, part_pages, glossary)
         if no_glossary:
             eff_no_glossary = True
-        extra = ["--no-auto-extract-glossary"] if eff_no_glossary else None
+        extra = []
+        if eff_no_glossary:
+            extra.append("--no-auto-extract-glossary")
         if eff_part:
-            extra = (extra or []) + ["--max-pages-per-part", str(eff_part)]
+            extra.append("--max-pages-per-part")
+            extra.append(str(eff_part))
         # 术语表注入：引擎 --glossaries 为单值（逗号分隔多路径，last-wins）
         gp = []
         from .glossary import glossary_csv_ok, glossary_path
@@ -246,8 +267,26 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
                 gp.append(os.path.abspath(gf))
             else:
                 print("[术语表] 用户术语表不存在或格式异常，已跳过：%s" % gf, file=sys.stderr)
+        # v2.10.0：文档术语自适应种子（LLM 翻译 → CSV，永不空 target）
+        seed_stats = None
+        if seed_terms and lang_in == "en" and lang_out == "zh" and not eff_no_glossary:
+            try:
+                from .glossary_seed import seed_glossary, translate_terms_llm
+                seed_stats = seed_glossary(
+                    real, glossary_path() if medical_glossary else None, file_out,
+                    translate_fn=lambda terms: translate_terms_llm(
+                        terms, base_url, api_key, model,
+                        timeout=openai_timeout or 60))
+                if seed_stats.get("path"):
+                    gp.append(seed_stats["path"])
+            except Exception as exc:
+                seed_stats = {"error": str(exc)[:200]}
+        # v2.10.0 评审 P0-1/P1-3：注入外部术语表即关引擎自动抽取（防挂死实例 +
+        # 防抽取非空时用户表被遮蔽），与 translate 通路同款语义
         if gp:
-            extra = (extra or []) + ["--glossaries", ",".join(gp)]
+            if "--no-auto-extract-glossary" not in extra:
+                extra.append("--no-auto-extract-glossary")
+            extra = extra + ["--glossaries", ",".join(gp)]
         eng = translate_pdf(
             real, file_out, base_url, api_key, model,
             page_count=rep.page_count if rep else None,
@@ -255,6 +294,11 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
             lang_in=eff_lang_in, lang_out=lang_out, qps=qps, extra_args=extra,
             openai_timeout=openai_timeout)
 
+        if tmp_ocr and os.path.isfile(tmp_ocr):
+            try:
+                os.remove(tmp_ocr)
+            except OSError:
+                pass
 
         entry = {
             "path": rel, "sha256": digest, "tier": tier,
@@ -268,6 +312,10 @@ def run_batch(input_dir: str, outdir: str, base_url: str, api_key: str, model: s
             "repair": repair_stats,
             "error": None if eng.ok else eng.stderr_tail[-600:],
         }
+        if ocr_stats is not None:
+            entry["ocr"] = ocr_stats
+        if seed_stats is not None:
+            entry["glossary_seeding"] = seed_stats
         if not eng.ok:
             # 回滚：删除本次产生的残缺产物（铁律：失败不留半成品）
             for p in (eng.dual_path, eng.mono_path):
@@ -333,7 +381,18 @@ def write_report(result: BatchResult, report_path: str) -> str:
                          % (e["watchdog"]["stall_s"], e["watchdog"]["file"]))
             continue
         note = e.get("error") or e.get("reason") or ""
-        note = str(note).replace("|", "/")[:80]
+        # v2.10.0：质量热点/术语种子进入备注列（报告可见性）
+        flags = []
+        low = (e.get("ocr") or {}).get("low_conf_pages") or []
+        if low:
+            flags.append("低置信页:" + ",".join(str(x) for x in low[:8])
+                         + ("…" if len(low) > 8 else ""))
+        seeded = (e.get("glossary_seeding") or {}).get("seeded") or []
+        if seeded:
+            flags.append("种子术语%d" % len(seeded))
+        if flags:
+            note = "；".join([str(note)[:60]] + flags)   # 先截错误再拼标记，防标记被截没
+        note = str(note).replace("|", "/")[:120]
         lines.append("| %s | %s | %s | %s | %s |"
                      % (e.get("path", "?"), e.get("tier", "-"),
                         e.get("status", "?"), e.get("duration_s", "-"), note))
