@@ -539,6 +539,103 @@ def cmd_estimate(args) -> int:
     return 0
 
 
+def cmd_extract(args) -> int:
+    from .direct_mode import DirectModeError, extract_lines
+    if not os.path.isfile(args.pdf):
+        print("文件不存在：%s" % args.pdf, file=sys.stderr)
+        return 2
+    outdir = args.output or os.path.join(
+        os.path.dirname(os.path.realpath(args.pdf)) or ".", "_direct")
+    try:
+        doc = extract_lines(args.pdf, pages_spec=args.pages,
+                            force_b=args.force_b, lang_out=args.lang_out)
+    except DirectModeError as exc:
+        print("✘ %s" % exc, file=sys.stderr)
+        return 2
+    os.makedirs(outdir, exist_ok=True)
+    json_path = os.path.join(outdir, "doc.direct.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=1)
+    n = sum(len(p["lines"]) for p in doc["pages"])
+    print("✔ 抽取完成（%s 级，%d 页 %d 行）→ %s"
+          % (doc["tier"], doc["pages_total"], n, json_path))
+    if doc.get("rotation_skipped_pages"):
+        print("  注意：旋转页 %s 未抽取（apply 时原样保留）"
+              % ",".join(map(str, doc["rotation_skipped_pages"])), file=sys.stderr)
+    print("下一步：翻译 JSON 中每条 line 的 text → 同条写入 translated（留空=保留原文），")
+    print("然后：doc-holmes apply %s -o %s [--dual]" % (json_path, outdir))
+    return 0
+
+
+def cmd_apply(args) -> int:
+    from .direct_mode import DirectModeError, apply_translation
+    if not os.path.isfile(args.json):
+        print("文件不存在：%s" % args.json, file=sys.stderr)
+        return 2
+    try:
+        with open(args.json, encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print("JSON 读取失败：%s" % exc, file=sys.stderr)
+        return 2
+    outdir = args.output or os.path.join(
+        os.path.dirname(os.path.realpath(args.json)) or ".", "direct_out")
+    try:
+        audit = apply_translation(doc, outdir, dual=args.dual,
+                                  out_stem=args.name, pdf_override=args.pdf)
+    except DirectModeError as exc:
+        print("✘ %s" % exc, file=sys.stderr)
+        return 2
+    audit_path = os.path.join(outdir, "direct.audit.json")
+    with open(audit_path, "w", encoding="utf-8") as f:
+        json.dump(audit, f, ensure_ascii=False, indent=2)
+    print("✔ 直翻回填完成（%d/%d 行翻译，%d 行保留原文）"
+          % (audit["lines_translated"], audit["lines_total"],
+             audit["lines_kept_original"]))
+    print("  纯译文: %s" % audit["mono_path"])
+    if audit.get("dual_path"):
+        print("  对照版: %s" % audit["dual_path"])
+    if audit.get("rotation_skipped_pages"):
+        print("  旋转页原样保留：%s"
+              % ",".join(map(str, audit["rotation_skipped_pages"])), file=sys.stderr)
+    if audit.get("lines_overflow"):
+        print("  注意：%d 行译文过长已压到最小字号仍超出原行框（复杂版面建议走引擎通路）"
+              % audit["lines_overflow"], file=sys.stderr)
+    print("  审计:   %s" % audit_path)
+    return 0
+
+
+def cmd_setup(args) -> int:
+    from .setup_wizard import status_report, validate_and_write
+    from .endpoints import EndpointError
+    if args.base_url or args.api_key:
+        try:
+            res = validate_and_write(
+                args.base_url, args.api_key, model=args.model,
+                env_file=args.env_file, skip_ping=args.skip_ping)
+        except EndpointError as exc:
+            print("✘ %s" % exc, file=sys.stderr)
+            return 2
+        except OSError as exc:
+            print("✘ 配置文件写入失败：%s" % exc, file=sys.stderr)
+            return 2
+        print("✔ 配置已写入 %s（权限 0600）" % res["env_file"])
+        print("  连通校验：%s" % res["ping"]["detail"])
+        print("  模型：%s" % res["model"])
+        return 0
+    rep = status_report(env_file=args.env_file)
+    print("doc-holmes 环境现状：")
+    print("  端点: %s" % (rep.get("endpoint") or
+                         "未配置（%s）" % rep.get("endpoint_hint", "缺少配置")))
+    print("  引擎: %s" % (rep.get("engine") or
+                         "未安装（%s）" % rep.get("engine_hint", "")))
+    print("  OCR : %s" % ("可用" if rep.get("ocr") else
+                         "未装（%s）" % (rep.get("ocr_hint") or "")))
+    print("\n一键配置：doc-holmes setup --base-url <端点> --api-key <你的key> [--model 模型名]")
+    print("（零引擎/零key 的轻量路线见：doc-holmes extract --help）")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="doc-holmes",
@@ -649,6 +746,33 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("selfcheck", help="环境自检：依赖/引擎/OCR/GPU/端点")
     p.add_argument("--net", action="store_true", help="附带真实端点连通性探测")
     p.set_defaults(func=cmd_selfcheck)
+
+    p = sub.add_parser("extract", help="零依赖直翻·步骤一：行级抽取（免引擎免key，仅 A 级）")
+    p.add_argument("pdf", help="输入 PDF")
+    p.add_argument("-o", "--output", help="输出目录（默认输入旁 _direct/）")
+    p.add_argument("--pages", help="页范围，如 1-5")
+    p.add_argument("--lang-out", default="zh", help="目标语言标记（默认 zh）")
+    p.add_argument("--force-b", action="store_true",
+                   help="B 级（图层有噪）显式放行——redaction 在重叠字形下可能损字，后果自担")
+    p.set_defaults(func=cmd_extract)
+
+    p = sub.add_parser("apply", help="零依赖直翻·步骤二：译文 JSON 回填（离线，保图保矢量）")
+    p.add_argument("json", help="extract 产出的 doc.direct.json（译文已填入 translated）")
+    p.add_argument("-o", "--output", help="输出目录（默认 JSON 旁 direct_out/）")
+    p.add_argument("--dual", action="store_true", help="追加左右对照版式（左原文右译文）")
+    p.add_argument("--pdf", default=None, help="源 PDF 被移动时显式指定（sha256 必须一致）")
+    p.add_argument("--name", default=None, help="输出文件主干名（默认沿用源文件名）")
+    p.set_defaults(func=cmd_apply)
+
+    p = sub.add_parser("setup", help="一键配置：写端点配置+连通校验+引擎指引（绝不代装任何包）")
+    p.add_argument("--base-url", default=None, help="你的 OpenAI 兼容端点")
+    p.add_argument("--api-key", default=None, help="你的 API key")
+    p.add_argument("--model", default=None, help="模型名（默认 glm-4.5-flash）")
+    p.add_argument("--env-file", default=None,
+                   help="配置文件路径（默认 ~/.config/doc-holmes/env；合并写入会剥除既有注释行）")
+    p.add_argument("--skip-ping", action="store_true",
+                   help="跳过连通校验强制写入（内网白名单等场景）")
+    p.set_defaults(func=cmd_setup)
     return ap
 
 

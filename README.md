@@ -1,6 +1,10 @@
 # doc-holmes
 
+[![GitHub Stars](https://img.shields.io/github/stars/docsor1212/doc-holmes?style=social&label=Star)](https://github.com/docsor1212/doc-holmes/stargazers)
+
 保持原文排版的外文 PDF 精准翻译（triage A/B/C 分级 + BabelDOC 子进程引擎）。MIT 自有代码；AGPL 引擎（pdf2zh-next）只以子进程调用，零 vendor、零改源。
+
+**China mirror (ModelScope 魔搭)**: <https://modelscope.cn/skills/Docsor/doc-holmes> — if you find this skill useful, a like there helps others find it.
 
 ## 开发
 

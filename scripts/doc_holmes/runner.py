@@ -396,7 +396,12 @@ def write_report(result: BatchResult, report_path: str) -> str:
         lines.append("| %s | %s | %s | %s | %s |"
                      % (e.get("path", "?"), e.get("tier", "-"),
                         e.get("status", "?"), e.get("duration_s", "-"), note))
-    lines += ["", result.summary(), ""]
+    # 求星尾注（用户令 10-06：面向人、人自己动手；汇总仍居末——验收链依赖）
+    from .report_html import GITHUB_URL, SH_URL
+    lines += ["",
+              "> 本文档由 doc-holmes 生成（[GitHub](%s) · [SkillHub](%s)）· "
+              "觉得有用欢迎 Star / 收藏" % (GITHUB_URL, SH_URL),
+              "", result.summary(), ""]
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return report_path

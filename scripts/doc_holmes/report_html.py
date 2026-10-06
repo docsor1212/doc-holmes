@@ -11,6 +11,9 @@ import html
 import json
 import os
 
+GITHUB_URL = "https://github.com/docsor1212/doc-holmes"
+SH_URL = "https://skillhub.cn/skills/indiv-sorsor/doc-holmes"
+
 _STATUS_COLOR = {"success": "#16a34a", "failed": "#dc2626", "timeout": "#d97706",
                  "skipped": "#64748b"}
 
@@ -84,13 +87,17 @@ __GLOSSARY__
 __ROWS__
 </table>
 <p class="meta">由 doc-holmes 生成；翻译为 AI 辅助，正式用途前请人工复核。</p>
+<footer style="margin-top:24px;padding-top:12px;border-top:1px solid #eee;color:#9aa0a6;font-size:12px;text-align:center;">
+本文档由 doc-holmes 生成 · <a href="__GH__" style="color:#9aa0a6;">GitHub</a> · <a href="__SH__" style="color:#9aa0a6;">SkillHub</a> · 觉得有用欢迎 Star / 收藏
+</footer>
 </body></html>""".replace("__TOTAL__", str(result.total)).replace("__OK__", str(result.success)
         ).replace("__FAIL__", str(result.failed)).replace("__TO__", str(result.timeout)
         ).replace("__SKIP__", str(result.skipped)).replace("__TA__", str(tiers["A"])
         ).replace("__TB__", str(tiers["B"])).replace("__TC__", str(tiers["C"])
         ).replace("__OUT__", _esc(result.outdir)).replace("__SPAN__", _esc(
             "%s ~ %s" % (result.started_at, result.finished_at))
-        ).replace("__ROWS__", "\n".join(rows)).replace("__GLOSSARY__", glossary_s)
+        ).replace("__ROWS__", "\n".join(rows)).replace("__GLOSSARY__", glossary_s
+        ).replace("__GH__", GITHUB_URL).replace("__SH__", SH_URL)
 
 
 def write_html(result, outdir: str, glossary_note: str = "") -> str:

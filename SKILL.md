@@ -1,23 +1,13 @@
 ---
 name: doc-holmes
-version: 2.10.0
+version: 3.0.0
 description: >-
-  Layout-preserving precise translation for large PDFs (papers, guidelines, reports). Keeps
-  formulas, figures, tables, TOC and annotations intact; outputs a bilingual side-by-side PDF
-  plus a pure-translation PDF. Every file is triaged first into tier A (clean born-digital, high
-  fidelity), tier B (noisy text layer, translated with a noise report), tier C
-  (scanned/image-only, experimental OCR channel marked preview quality). Runs the BabelDOC engine
-  (pdf2zh-next) as a subprocess on any OpenAI-compatible endpoint you configure (bring your own
-  key; none bundled). Batch mode ships resume, per-file timeout, audit log and rollback. Triggers
-  include PDF translation, PDF to Chinese, translate paper, translate document,
-  full-text translation, bilingual PDF, side-by-side translation, keep original layout, layout
-  preserved, formula preservation, scanned PDF translation, academic PDF translator, medical
-  literature translation, docx translation, pptx translation, Word document translation, batch PDF translate.
+  Layout-preserving precise translation for large PDFs. Keeps formulas, figures, tables, TOC and annotations intact; outputs a bilingual side-by-side PDF plus a pure-translation PDF. Tier-A documents also support a zero-dependency direct mode (extract, translate, apply - no engine, no API key) and one-command setup. Every file is triaged first into tier A (clean born-digital, high fidelity), tier B (noisy text layer, translated with a noise report), tier C (scanned/image-on ly, experimental OCR channel marked preview quality). Runs the BabelDOC engine (pdf2zh-next) as a subprocess on any OpenAI-compatible endpoint you configure (bring your own key; none bundled ). Batch mode ships resume, per-file timeout, audit log and rollback. Triggers include PDF tran slation, PDF to Chinese, translate paper, bilingual PDF, side-by-side translation, keep origina l layout, layout preserved, formula preservation, scanned PDF translation, medical literature t ranslation, batch PDF translate.
 author: DoctorQ Lab
 license: MIT
 compatibility: Requires Python 3.10+ and the pdf2zh-next engine (pip install pdf2zh-next or uv tool install pdf2zh-next). Translation uses your own OpenAI-compatible endpoint and API key (env DOC_HOLMES_OPENAI_BASE_URL + DOC_HOLMES_OPENAI_API_KEY; the free-tier glm-4.5-flash on the official Zhipu open platform works well). No credentials are bundled. The OCR channel for scanned PDFs optionally uses tesseract. Works on Linux, macOS and Windows.
 metadata:
-  version: "2.10.0"
+  version: "3.0.0"
   author: docsor1212
   displayName: Doc Holmes - Layout-Preserving PDF Translation
   homepage: https://skillhub.cn
@@ -46,6 +36,7 @@ doc_holmes_cli.py estimate big.pdf                 # pages/chars/partition/time 
 python3 scripts/doc_holmes_cli.py merge a.pdf b.pdf -o merged.pdf   # merge translated parts back into one
 doc_holmes_cli.py split doc.pdf --pages 1-25,26-50  # split for partitioned translation
 
+doc_holmes_cli.py setup --base-url <endpoint> --api-key <key>   # one-command config + connectivity check (never installs packages)
 doc_holmes_cli.py selfcheck                        # after engine install: env check (engine/OCR/GPU/endpoint)
 
 # 1) Translate one file: outputs bilingual + pure-translation PDFs (into _translated/ next to input)
@@ -85,6 +76,22 @@ en→zh translation injects a bundled medical glossary of core terms by default 
 
 **Tier-C page-level quality hotspots**: during OCR rebuild, per-page recognition confidence is aggregated; pages whose mean confidence is low (with enough words to be statistically meaningful) are recorded in the audit as `ocr.low_conf_pages` and surfaced in translate output and the batch report — so human review can target specific pages instead of proofreading the whole document. Conservative by design: pages with too few words (covers, full-page figures) are never flagged, avoiding false alarms.
 
+## Zero-dependency direct mode (no engine, no endpoint, no key - v3.0.0)
+
+For fast reading and lightweight delivery: your model (or any translator you trust) does the translating; doc-holmes does the PDF surgery.
+
+```bash
+# Step 1: extract line-level text (tier A only; fully offline)
+doc_holmes_cli.py extract paper.pdf -o work/
+# Step 2: translate work/doc.direct.json - write the translation of each line's
+#         text into the same line's "translated" (keep the count; empty = keep original)
+# Step 3: apply (offline): remove original lines (images and vector graphics preserved),
+#         refill translations into the line frames
+doc_holmes_cli.py apply work/doc.direct.json -o out/ --dual
+```
+
+Outputs: `<name>.zh.direct.pdf` (translation-only, selectable/searchable text) plus `--dual` side-by-side. Promise: line-level replacement with images/figures/formulas untouched; for complex layouts (multi-page tables, dense columns) prefer the engine path for full layout fidelity. Tier guard: tier B refused by default (redaction on overlapping glyphs is destructive - `--force-b` at your own risk); tier C hard-refused (use the OCR channel).
+
 ## Commands
 
 ```bash
@@ -99,6 +106,9 @@ doc_holmes_cli.py translate paper.pdf [-o dir] \
 doc_holmes_cli.py batch <dir> -o <outdir> \
   [--workers 1-4] [--no-resume] [--blacklist f1 f2] [--tier auto] [--repair auto|on|off] [--no-glossary] \
   [--no-medical-glossary] [--no-ocr-proofread] [--seed-terms] [--password pw] [--auto-lang]
+doc_holmes_cli.py extract paper.pdf -o work/      # direct mode step 1 (tier A only)
+doc_holmes_cli.py apply work/doc.direct.json -o out/ [--dual]   # direct step 2: refill
+doc_holmes_cli.py setup --base-url <endpoint> --api-key <key>   # one-command config
 doc_holmes_cli.py report <outdir>                  # aggregate audit.jsonl -> report.md
 doc_holmes_cli.py selfcheck [--net]                # env check; --net also pings the endpoint
 ```
@@ -126,7 +136,7 @@ Note: CLI help texts are in Chinese (the author's primary audience); the flags a
 | Can do | Won't do / limited |
 |---|---|
 | en→zh as the primary, validated direction | other language pairs work but are not quality-validated yet |
-| Tier A high fidelity; formulas/figures kept as-is | **tier C is preview quality only** — OCR errors will leak into the text (the low-confidence page list tells you where to look) |
+| Tier A high fidelity; formulas/figures kept as-is; **tier A also has zero-dependency direct mode** (no engine, no key) | **tier C is preview quality only** — OCR errors will leak into the text (the low-confidence page list tells you where to look) |
 | Two-column / multi-column layout and headers (engine-native) | encrypted PDFs: pass `--password` for automatic decryption (requires local qpdf) |
 | Batch resume, rollback on failure, full audit trail | handwriting / low-quality scans: no recognition guarantee |
 | Clean output with no tool watermark (default no_watermark) | no rewriting or polishing of the translation (that is paper-polisher-pro's job) |
